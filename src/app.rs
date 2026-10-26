@@ -86,6 +86,8 @@ pub struct App {
     exiting: bool,
     /// Text of the "add a program" field (Programs page).
     pub new_rule: String,
+    /// The trace file while tracing is on (Status page).
+    trace: Option<std::io::BufWriter<std::fs::File>>,
 }
 
 /// Frames the window paints, cloaked, before it is shown, and the longest
@@ -173,6 +175,47 @@ impl App {
             autostart: crate::autostart::is_enabled(),
             exiting: false,
             new_rule: String::new(),
+            trace: None,
+        }
+    }
+
+    /// Where the trace is written: next to the settings.
+    pub fn trace_path() -> Option<std::path::PathBuf> {
+        crate::settings::location()
+            .file
+            .as_ref()
+            .and_then(|f| f.parent())
+            .map(|d| d.join("trace.log"))
+    }
+
+    pub fn tracing(&self) -> bool {
+        self.trace.is_some()
+    }
+
+    /// Start or stop writing the trace (the file is started afresh).
+    pub fn set_tracing(&mut self, on: bool) {
+        use std::io::Write;
+        if on && self.trace.is_none() {
+            if let Some(path) = Self::trace_path()
+                && let Ok(file) = std::fs::File::create(&path)
+            {
+                let mut w = std::io::BufWriter::new(file);
+                let _ = writeln!(
+                    w,
+                    "{} {} pair={:08x}/{:08x}",
+                    crate::APP_NAME,
+                    crate::VERSION,
+                    self.pair[0] as u32,
+                    self.pair[1] as u32
+                );
+                self.trace = Some(w);
+                hook::set_trace(true);
+            }
+        } else if !on {
+            hook::set_trace(false);
+            if let Some(mut w) = self.trace.take() {
+                let _ = w.flush();
+            }
         }
     }
 
@@ -226,6 +269,13 @@ impl App {
                     self.conversions.truncate(MAX_CONVERSIONS);
                 }
                 Event::Hooks(ok) => self.hooks = Some(ok),
+                Event::Trace(line) => {
+                    use std::io::Write;
+                    if let Some(w) = &mut self.trace {
+                        let _ = writeln!(w, "{line}");
+                        let _ = w.flush();
+                    }
+                }
             }
         }
     }

@@ -116,11 +116,32 @@ pub fn status(app: &mut App, ui: &mut Ui) {
                 ui.end_row();
             }
         });
-    if let Some(c) = app.conversions.front() {
+    if !app.conversions.is_empty() {
         // The "ago" column ticks while the page is open.
-        let _ = c;
         ui.ctx()
             .request_repaint_after(std::time::Duration::from_secs(1));
+    }
+    ui.add_space(16.0);
+    let mut tracing = app.tracing();
+    let label = tr!(
+        "Write a trace of the keys to a file (for finding a problem)",
+        "Писать трассировку клавиш в файл (для поиска проблемы)"
+    );
+    let path = crate::app::App::trace_path()
+        .map(|p| p.display().to_string())
+        .unwrap_or_default();
+    if ui
+        .checkbox(&mut tracing, label)
+        .on_hover_text(&path)
+        .changed()
+    {
+        app.set_tracing(tracing);
+    }
+    if tracing {
+        ui.weak(tr!(
+            format!("Every key goes to {path} while this is on; turn it off afterwards."),
+            format!("Пока включено, каждая клавиша пишется в {path}; после проверки выключите.")
+        ));
     }
 }
 

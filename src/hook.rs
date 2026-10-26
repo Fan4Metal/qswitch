@@ -56,6 +56,9 @@ pub enum Event {
     },
     /// The hooks are in place, or could not be set.
     Hooks(bool),
+    /// A line of the trace (while [`set_trace`] is on): a key as the hook
+    /// saw it and what the machine made of it, a job done, a window change.
+    Trace(String),
 }
 
 /// What the thread works with, from the settings.
@@ -78,6 +81,7 @@ const POLL_MS: u32 = 150;
 
 static SETUP: Mutex<Option<Setup>> = Mutex::new(None);
 static PAUSED: AtomicBool = AtomicBool::new(false);
+static TRACE: AtomicBool = AtomicBool::new(false);
 static THREAD: AtomicU32 = AtomicU32::new(0);
 
 thread_local! {
@@ -131,6 +135,17 @@ pub fn paused() -> bool {
 }
 
 /// Paused, the hooks stay in place but let everything through.
+/// Send every key and job to the UI as [`Event::Trace`] lines (the UI
+/// writes them to a file), for finding out what a program does with the
+/// injected keys.
+pub fn set_trace(on: bool) {
+    TRACE.store(on, Ordering::Relaxed);
+}
+
+fn tracing() -> bool {
+    TRACE.load(Ordering::Relaxed)
+}
+
 pub fn set_paused(paused: bool) {
     PAUSED.store(paused, Ordering::Relaxed);
     post(WM_RELOAD);
@@ -298,14 +313,16 @@ impl State {
         self.pair.iter().position(|&h| h == hkl).map(|i| i as u8)
     }
 
-    /// A key from the hook; whether to swallow it.
-    fn on_key(&mut self, vk: u16, down: bool, time: u64) -> bool {
+    /// A key from the hook; whether to swallow it. `injected`: by some
+    /// other program's `SendInput` (the program's own keys never get here).
+    fn on_key(&mut self, vk: u16, down: bool, time: u64, injected: bool) -> bool {
         if vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT {
             self.shift = down;
         }
         if paused() {
             return false;
         }
+        let trace = tracing();
         let hkl = layout::current();
         let index = hkl.and_then(|h| self.index_of(h));
         let chars = if down {
@@ -324,6 +341,18 @@ impl State {
             chars,
             layout: index,
         });
+        if trace {
+            let line = format!(
+                "key vk={vk:#04x} {} t={time} inj={injected} hkl={:08x} layout={index:?} chars={chars:?} shift={} -> swallow={} effects={:?} screen={:?}",
+                if down { "down" } else { "up" },
+                hkl.unwrap_or(0) as u32,
+                self.shift,
+                verdict.swallow,
+                verdict.effects,
+                self.engine.screen()
+            );
+            self.send(Event::Trace(line));
+        }
         for effect in verdict.effects {
             match effect {
                 Effect::SwitchLayout(i) => self.jobs.push_back(Job::Switch(self.pair[i as usize])),
@@ -351,6 +380,9 @@ impl State {
 
     fn run_jobs(&mut self) {
         while let Some(job) = self.jobs.pop_front() {
+            if tracing() {
+                self.send(Event::Trace(format!("job {job:?}")));
+            }
             match job {
                 Job::Switch(hkl) => {
                     layout::switch_to(hkl);
@@ -365,6 +397,9 @@ impl State {
         let Some(hkl) = layout::current() else { return };
         if self.last_layout != Some(hkl) {
             self.last_layout = Some(hkl);
+            if tracing() {
+                self.send(Event::Trace(format!("layout {:08x}", hkl as u32)));
+            }
             self.send(Event::Layout {
                 hkl,
                 index: self.index_of(hkl),
@@ -377,6 +412,9 @@ impl State {
     fn foreground_changed(&mut self, hwnd: isize) {
         self.engine.reset();
         let exe = process_name(hwnd).unwrap_or_default();
+        if tracing() {
+            self.send(Event::Trace(format!("foreground {hwnd:#x} {exe}")));
+        }
         if exe != self.exe || self.last_layout.is_none() {
             self.exe = exe;
             self.mode = rule_for(&self.rules, &self.exe);
@@ -470,11 +508,13 @@ fn process_name(hwnd: isize) -> Option<String> {
 unsafe extern "system" fn keyboard_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 && lparam != 0 {
         let k = unsafe { &*(lparam as *const KBDLLHOOKSTRUCT) };
-        let ours = k.flags & LLKHF_INJECTED != 0 && k.dwExtraInfo == MAGIC;
+        let injected = k.flags & LLKHF_INJECTED != 0;
+        let ours = injected && k.dwExtraInfo == MAGIC;
         if !ours {
             let down = matches!(wparam as u32, WM_KEYDOWN | WM_SYSKEYDOWN);
             let swallow =
-                with_state(|s| s.on_key(k.vkCode as u16, down, u64::from(k.time))).unwrap_or(false);
+                with_state(|s| s.on_key(k.vkCode as u16, down, u64::from(k.time), injected))
+                    .unwrap_or(false);
             if swallow {
                 return 1;
             }
@@ -511,6 +551,9 @@ unsafe extern "system" fn win_event_proc(
         }
         EVENT_OBJECT_FOCUS => {
             with_state(|s| {
+                if tracing() {
+                    s.send(Event::Trace(format!("focus {:#x}", hwnd as isize)));
+                }
                 s.engine.reset();
                 s.poll_layout();
             });
