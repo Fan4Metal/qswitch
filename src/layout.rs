@@ -1,0 +1,253 @@
+//! Keyboard layouts as Windows has them: the installed ones with their
+//! names, which one the foreground window is in, switching it, and the
+//! table of what each key types in a layout (`ToUnicodeEx`), from which
+//! the machine (`engine.rs`) converts text between the two of the pair.
+
+use std::ffi::c_void;
+
+/// A keyboard layout handle (`HKL`): the language in the low word, the
+/// layout (a device handle for a custom one) in the high word.
+pub type Hkl = isize;
+
+/// An installed layout.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Layout {
+    pub hkl: Hkl,
+    /// Two letters for the tray: `EN`, `RU`.
+    pub code: String,
+    /// The language in the interface's language: `English (United States)`.
+    pub name: String,
+}
+
+impl Layout {
+    /// As kept in the settings: the handle in hex.
+    pub fn id(&self) -> String {
+        id(self.hkl)
+    }
+}
+
+/// The handle as kept in the settings.
+pub fn id(hkl: Hkl) -> String {
+    format!("{:08x}", hkl as u32)
+}
+
+/// The installed layouts in Windows' order (the language bar's).
+#[cfg(windows)]
+pub fn installed() -> Vec<Layout> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayoutList;
+    let n = unsafe { GetKeyboardLayoutList(0, std::ptr::null_mut()) };
+    let mut list = vec![std::ptr::null_mut::<c_void>(); n.max(0) as usize];
+    let got = unsafe { GetKeyboardLayoutList(list.len() as i32, list.as_mut_ptr()) };
+    list.truncate(got.max(0) as usize);
+    list.into_iter()
+        .map(|h| {
+            let hkl = h as Hkl;
+            let (code, name) = describe(hkl);
+            Layout { hkl, code, name }
+        })
+        .collect()
+}
+
+/// The two-letter code and the name of a layout's language.
+#[cfg(windows)]
+fn describe(hkl: Hkl) -> (String, String) {
+    use windows_sys::Win32::Globalization::{GetLocaleInfoEx, LCIDToLocaleName};
+    const LOCALE_SLOCALIZEDDISPLAYNAME: u32 = 0x0000_0002;
+    let lang = (hkl as u32) & 0xFFFF;
+    let mut locale = [0u16; 85];
+    let n = unsafe { LCIDToLocaleName(lang, locale.as_mut_ptr(), locale.len() as i32, 0) };
+    if n <= 1 {
+        return (format!("{lang:04X}"), format!("Language {lang:04X}"));
+    }
+    let locale_name = String::from_utf16_lossy(&locale[..n as usize - 1]);
+    let code = locale_name.split('-').next().unwrap_or("").to_uppercase();
+    let mut name = [0u16; 128];
+    let n = unsafe {
+        GetLocaleInfoEx(
+            locale.as_ptr(),
+            LOCALE_SLOCALIZEDDISPLAYNAME,
+            name.as_mut_ptr(),
+            name.len() as i32,
+        )
+    };
+    let name = if n > 1 {
+        String::from_utf16_lossy(&name[..n as usize - 1])
+    } else {
+        locale_name.clone()
+    };
+    (code, name)
+}
+
+/// The foreground window, and the one with the keyboard focus in it when
+/// the foreground thread tells (a control inside, or the real window of a
+/// UWP app behind its frame); `None` without a foreground window.
+#[cfg(windows)]
+pub fn target_window() -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GUITHREADINFO, GetForegroundWindow, GetGUIThreadInfo,
+    };
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() {
+        return None;
+    }
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if unsafe { GetGUIThreadInfo(0, &mut info) } != 0 && !info.hwndFocus.is_null() {
+        return Some(info.hwndFocus as isize);
+    }
+    Some(foreground as isize)
+}
+
+/// The layout of the thread that owns `hwnd`.
+#[cfg(windows)]
+pub fn layout_of(hwnd: isize) -> Hkl {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::GetKeyboardLayout;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId;
+    let thread = unsafe { GetWindowThreadProcessId(hwnd as _, std::ptr::null_mut()) };
+    unsafe { GetKeyboardLayout(thread) as Hkl }
+}
+
+/// The layout the foreground window is in, `None` without one.
+#[cfg(windows)]
+pub fn current() -> Option<Hkl> {
+    target_window().map(layout_of)
+}
+
+/// Ask the window typed in to take layout `hkl` (`WM_INPUTLANGCHANGEREQUEST`,
+/// which the window's default procedure answers by activating it).
+#[cfg(windows)]
+pub fn switch_to(hkl: Hkl) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetForegroundWindow, PostMessageW, WM_INPUTLANGCHANGEREQUEST,
+    };
+    let Some(target) = target_window() else {
+        return;
+    };
+    unsafe {
+        PostMessageW(target as _, WM_INPUTLANGCHANGEREQUEST, 0, hkl);
+        // A control inside answers for its thread, but a frame window of
+        // another thread (a UWP app's) is asked too.
+        let foreground = GetForegroundWindow() as isize;
+        if foreground != target && foreground != 0 {
+            PostMessageW(foreground as _, WM_INPUTLANGCHANGEREQUEST, 0, hkl);
+        }
+    }
+}
+
+/// What a key types in one layout, by virtual key and the state of Shift
+/// and Caps Lock.
+#[derive(Clone, Debug)]
+pub struct Table {
+    /// `[vk][shift | caps << 1]`.
+    chars: Vec<[Option<char>; 4]>,
+}
+
+impl Table {
+    /// An empty table (a layout outside the pair, tests).
+    pub fn empty() -> Table {
+        Table {
+            chars: vec![[None; 4]; 256],
+        }
+    }
+
+    pub fn get(&self, vk: u16, shift: bool, caps: bool) -> Option<char> {
+        self.chars
+            .get(vk as usize)
+            .and_then(|c| c[usize::from(shift) | usize::from(caps) << 1])
+    }
+
+    /// Builds a table for a layout with `ToUnicodeEx`, which is asked not
+    /// to touch the keyboard's dead-key state (bit 2 of the flags, Windows
+    /// 10 1607 and later). Control characters (Enter, Tab, Backspace) and
+    /// dead keys are `None`: the machine does not track them.
+    #[cfg(windows)]
+    pub fn of(hkl: Hkl) -> Table {
+        use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+            MapVirtualKeyExW, ToUnicodeEx, VK_CAPITAL, VK_SHIFT,
+        };
+        const MAPVK_VK_TO_VSC: u32 = 0;
+        const DO_NOT_CHANGE_STATE: u32 = 1 << 2;
+        let mut chars = vec![[None; 4]; 256];
+        for (vk, slot) in chars.iter_mut().enumerate() {
+            let scan = unsafe { MapVirtualKeyExW(vk as u32, MAPVK_VK_TO_VSC, hkl as _) };
+            if scan == 0 {
+                continue;
+            }
+            for (i, c) in slot.iter_mut().enumerate() {
+                let mut state = [0u8; 256];
+                if i & 1 != 0 {
+                    state[VK_SHIFT as usize] = 0x80;
+                }
+                if i & 2 != 0 {
+                    state[VK_CAPITAL as usize] = 1;
+                }
+                let mut buf = [0u16; 8];
+                let n = unsafe {
+                    ToUnicodeEx(
+                        vk as u32,
+                        scan,
+                        state.as_ptr(),
+                        buf.as_mut_ptr(),
+                        buf.len() as i32,
+                        DO_NOT_CHANGE_STATE,
+                        hkl as _,
+                    )
+                };
+                if n <= 0 {
+                    continue;
+                }
+                let text = String::from_utf16_lossy(&buf[..n as usize]);
+                let mut it = text.chars();
+                if let (Some(ch), None) = (it.next(), it.next())
+                    && !ch.is_control()
+                {
+                    *c = Some(ch);
+                }
+            }
+        }
+        Table { chars }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_are_hex_of_the_handle() {
+        assert_eq!(id(0x0419_0419), "04190419");
+        assert_eq!(id(0xF008_0409u32 as i32 as isize), "f0080409");
+    }
+
+    #[test]
+    #[cfg(windows)]
+    fn installed_layouts_have_tables() {
+        // Needs at least one layout, which any Windows has.
+        let layouts = installed();
+        assert!(!layouts.is_empty());
+        for l in &layouts {
+            assert_eq!(l.code.len(), 2, "{l:?}");
+            let table = Table::of(l.hkl);
+            // Space is a space everywhere, A is a letter.
+            assert_eq!(table.get(0x20, false, false), Some(' '));
+            assert!(
+                table
+                    .get(0x41, false, false)
+                    .is_some_and(char::is_alphabetic)
+            );
+            assert!(table.get(0x41, true, false).is_some_and(char::is_uppercase));
+            assert!(table.get(0x41, false, true).is_some_and(char::is_uppercase));
+            assert_eq!(table.get(0x0D, false, false), None);
+        }
+        if let Some(en) = layouts.iter().find(|l| l.code == "EN") {
+            let t = Table::of(en.hkl);
+            assert_eq!(t.get(0x51, false, false), Some('q'));
+            assert_eq!(t.get(0xBF, true, false), Some('?'));
+        }
+        if let Some(ru) = layouts.iter().find(|l| l.code == "RU") {
+            let t = Table::of(ru.hkl);
+            assert_eq!(t.get(0x51, false, false), Some('й'));
+            assert_eq!(t.get(0xBF, true, false), Some(','));
+        }
+    }
+}
