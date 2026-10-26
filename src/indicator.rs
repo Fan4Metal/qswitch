@@ -1,0 +1,392 @@
+//! The badge with the layout's letters near the caret: shown for a moment
+//! when the layout changes (`IndicatorMode::OnSwitch`), or kept beside the
+//! caret as it moves (`Always`). A small layered pop-up window that never
+//! takes the focus and lets clicks through, owned by the hook thread, which
+//! learns where the caret is from `EVENT_OBJECT_LOCATIONCHANGE` for
+//! `OBJID_CARET` (`GetGUIThreadInfo` of the event's thread: no call into
+//! the other process). Without a caret (a program that keeps none), the
+//! badge appears beside the mouse pointer.
+
+use std::cell::RefCell;
+
+use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
+use windows_sys::Win32::Graphics::Gdi::{
+    BeginPaint, CLIP_DEFAULT_PRECIS, ClientToScreen, CreateCompatibleDC, CreateFontW,
+    CreateRoundRectRgn, CreateSolidBrush, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_SINGLELINE,
+    DT_VCENTER, DeleteDC, DeleteObject, DrawTextW, EndPaint, FF_DONTCARE, FW_BOLD, FillRect,
+    FrameRect, GetMonitorInfoW, GetTextExtentPoint32W, MONITOR_DEFAULTTONEAREST, MONITORINFO,
+    MonitorFromPoint, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PROOF_QUALITY, SelectObject, SetBkMode,
+    SetTextColor, SetWindowRgn, TRANSPARENT,
+};
+use windows_sys::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExW, DefWindowProcW, DestroyWindow, GUITHREADINFO, GetCursorPos,
+    GetForegroundWindow, GetGUIThreadInfo, HWND_TOPMOST, LWA_ALPHA, RegisterClassW, SW_HIDE,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, WM_PAINT,
+    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    WS_POPUP,
+};
+
+use crate::settings::IndicatorMode;
+
+/// The badge's transparency (255: opaque).
+const ALPHA: u8 = 235;
+/// Point size of the letters.
+const POINTS: i32 = 10;
+
+/// What the window procedure paints with (the window's thread only).
+struct Paint {
+    letters: Vec<u16>,
+    light: bool,
+    font: isize,
+}
+
+thread_local! {
+    static PAINT: RefCell<Paint> = const { RefCell::new(Paint { letters: Vec::new(), light: false, font: 0 }) };
+}
+
+pub struct Indicator {
+    hwnd: isize,
+    mode: IndicatorMode,
+    duration_ms: u64,
+    letters: String,
+    /// The caret's place on the screen, as last reported for the window in
+    /// front; forgotten when another window comes to the front.
+    caret: Option<RECT>,
+    /// When to hide, in `OnSwitch` mode (`GetTickCount64`).
+    hide_at: Option<u64>,
+    visible: bool,
+    /// The DPI the font was made for.
+    font_dpi: u32,
+}
+
+impl Indicator {
+    /// The window, hidden; `None` if it could not be made.
+    pub fn new() -> Option<Indicator> {
+        use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+        let class = crate::win::wide("qswitch_indicator");
+        // SAFETY: a window class and a window of this thread.
+        let hwnd = unsafe {
+            let instance = GetModuleHandleW(std::ptr::null());
+            let wc = WNDCLASSW {
+                lpfnWndProc: Some(window_proc),
+                hInstance: instance,
+                lpszClassName: class.as_ptr(),
+                ..std::mem::zeroed()
+            };
+            RegisterClassW(&wc);
+            CreateWindowExW(
+                WS_EX_TOPMOST
+                    | WS_EX_TOOLWINDOW
+                    | WS_EX_NOACTIVATE
+                    | WS_EX_LAYERED
+                    | WS_EX_TRANSPARENT,
+                class.as_ptr(),
+                std::ptr::null(),
+                WS_POPUP,
+                0,
+                0,
+                10,
+                10,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                instance,
+                std::ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            log::warn!(
+                "indicator window not made: {}",
+                std::io::Error::last_os_error()
+            );
+            return None;
+        }
+        unsafe { SetLayeredWindowAttributes(hwnd, 0, ALPHA, LWA_ALPHA) };
+        Some(Indicator {
+            hwnd: hwnd as isize,
+            mode: IndicatorMode::Off,
+            duration_ms: 700,
+            letters: String::new(),
+            caret: None,
+            hide_at: None,
+            visible: false,
+            font_dpi: 0,
+        })
+    }
+
+    pub fn configure(&mut self, mode: IndicatorMode, duration_ms: u64) {
+        self.mode = mode;
+        self.duration_ms = duration_ms;
+        if mode != IndicatorMode::Always {
+            self.hide();
+        }
+    }
+
+    /// The layout changed: the badge shows its letters (for a moment, or
+    /// from now on); `flash` is false for the first layout seen at start.
+    pub fn set_letters(&mut self, letters: &str, flash: bool) {
+        self.letters = letters.to_owned();
+        PAINT.with_borrow_mut(|p| {
+            p.letters = letters.encode_utf16().collect();
+            p.light = crate::tray::taskbar_is_light();
+        });
+        match self.mode {
+            IndicatorMode::Off => {}
+            IndicatorMode::OnSwitch if flash => {
+                self.hide_at = Some(now() + self.duration_ms);
+                self.show();
+            }
+            IndicatorMode::OnSwitch => {}
+            IndicatorMode::Always => self.show(),
+        }
+    }
+
+    /// The caret of the window in front moved to `rect` (screen pixels).
+    pub fn caret_moved(&mut self, rect: RECT) {
+        let moved = !self.caret.is_some_and(|c| {
+            c.left == rect.left
+                && c.top == rect.top
+                && c.right == rect.right
+                && c.bottom == rect.bottom
+        });
+        self.caret = Some(rect);
+        if moved && (self.mode == IndicatorMode::Always || self.visible) {
+            self.show();
+        }
+    }
+
+    /// Another window is in front: its caret is not known yet.
+    pub fn foreground_changed(&mut self) {
+        self.caret = None;
+        if self.mode == IndicatorMode::Always {
+            self.hide();
+        }
+    }
+
+    /// Every 150 ms: hide once the moment has passed.
+    pub fn tick(&mut self) {
+        if let Some(at) = self.hide_at
+            && now() >= at
+        {
+            self.hide_at = None;
+            self.hide();
+        }
+    }
+
+    /// The badge at the caret (or the mouse), sized for the letters and
+    /// the DPI of the window in front, shown without taking the focus.
+    fn show(&mut self) {
+        if self.letters.is_empty() {
+            return;
+        }
+        // SAFETY: GDI objects of this thread; the window is this thread's.
+        unsafe {
+            let foreground = GetForegroundWindow();
+            let dpi = if foreground.is_null() {
+                96
+            } else {
+                GetDpiForWindow(foreground)
+            }
+            .max(96);
+            let scale = dpi as f32 / 96.0;
+            if self.font_dpi != dpi {
+                let old = PAINT.with_borrow(|p| p.font);
+                if old != 0 {
+                    DeleteObject(old as _);
+                }
+                let face = crate::win::wide("Segoe UI");
+                let font = CreateFontW(
+                    -(POINTS * dpi as i32 / 72),
+                    0,
+                    0,
+                    0,
+                    FW_BOLD as i32,
+                    0,
+                    0,
+                    0,
+                    DEFAULT_CHARSET as u32,
+                    OUT_DEFAULT_PRECIS as u32,
+                    CLIP_DEFAULT_PRECIS as u32,
+                    PROOF_QUALITY as u32,
+                    (DEFAULT_PITCH | FF_DONTCARE) as u32,
+                    face.as_ptr(),
+                );
+                PAINT.with_borrow_mut(|p| p.font = font as isize);
+                self.font_dpi = dpi;
+            }
+            // The letters' size.
+            let dc = CreateCompatibleDC(std::ptr::null_mut());
+            let font = PAINT.with_borrow(|p| p.font);
+            let old = SelectObject(dc, font as _);
+            let text: Vec<u16> = self.letters.encode_utf16().collect();
+            let mut size = SIZE { cx: 0, cy: 0 };
+            GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32, &mut size);
+            SelectObject(dc, old);
+            DeleteDC(dc);
+            let width = size.cx + (10.0 * scale) as i32;
+            let height = size.cy + (4.0 * scale) as i32;
+            // Below and right of the caret, else beside the pointer.
+            let gap = (4.0 * scale) as i32;
+            let (mut x, mut y, above) = match self.caret {
+                Some(c) => (c.left, c.bottom + gap, c.top - gap - height),
+                None => {
+                    let mut p = POINT { x: 0, y: 0 };
+                    GetCursorPos(&mut p);
+                    (
+                        p.x + (16.0 * scale) as i32,
+                        p.y + (20.0 * scale) as i32,
+                        p.y - gap - height,
+                    )
+                }
+            };
+            // Kept on the monitor's work area.
+            let point = POINT { x, y };
+            let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+            let mut info: MONITORINFO = std::mem::zeroed();
+            info.cbSize = size_of::<MONITORINFO>() as u32;
+            if !monitor.is_null() && GetMonitorInfoW(monitor, &mut info) != 0 {
+                let work = info.rcWork;
+                if y + height > work.bottom {
+                    y = above;
+                }
+                x = x.clamp(work.left, (work.right - width).max(work.left));
+                y = y.clamp(work.top, (work.bottom - height).max(work.top));
+            }
+            let region = CreateRoundRectRgn(
+                0,
+                0,
+                width + 1,
+                height + 1,
+                (6.0 * scale) as i32,
+                (6.0 * scale) as i32,
+            );
+            SetWindowRgn(self.hwnd as _, region, 1);
+            SetWindowPos(
+                self.hwnd as _,
+                HWND_TOPMOST,
+                x,
+                y,
+                width,
+                height,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            );
+            // Painted anew: the letters may have changed at the same size.
+            windows_sys::Win32::Graphics::Gdi::InvalidateRect(self.hwnd as _, std::ptr::null(), 1);
+        }
+        self.visible = true;
+    }
+
+    fn hide(&mut self) {
+        if self.visible {
+            unsafe { ShowWindow(self.hwnd as _, SW_HIDE) };
+            self.visible = false;
+        }
+    }
+}
+
+impl Drop for Indicator {
+    fn drop(&mut self) {
+        unsafe { DestroyWindow(self.hwnd as _) };
+        let font = PAINT.with_borrow_mut(|p| std::mem::take(&mut p.font));
+        if font != 0 {
+            unsafe { DeleteObject(font as _) };
+        }
+    }
+}
+
+/// The caret of the thread `thread` (the one of a caret event) as a screen
+/// rectangle, if the thread has a blinking caret in a window.
+pub fn caret_of_thread(thread: u32) -> Option<RECT> {
+    const GUI_CARETBLINKING: u32 = 0x0001;
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    if unsafe { GetGUIThreadInfo(thread, &mut info) } == 0
+        || info.flags & GUI_CARETBLINKING == 0
+        || info.hwndCaret.is_null()
+    {
+        return None;
+    }
+    let mut top_left = POINT {
+        x: info.rcCaret.left,
+        y: info.rcCaret.top,
+    };
+    let mut bottom_right = POINT {
+        x: info.rcCaret.right,
+        y: info.rcCaret.bottom,
+    };
+    unsafe {
+        ClientToScreen(info.hwndCaret, &mut top_left);
+        ClientToScreen(info.hwndCaret, &mut bottom_right);
+    }
+    // A caret of no height is no caret.
+    if bottom_right.y <= top_left.y {
+        return None;
+    }
+    Some(RECT {
+        left: top_left.x,
+        top: top_left.y,
+        right: bottom_right.x,
+        bottom: bottom_right.y,
+    })
+}
+
+fn now() -> u64 {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn GetTickCount64() -> u64;
+    }
+    unsafe { GetTickCount64() }
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn GetDpiForWindow(hwnd: HWND) -> u32;
+}
+
+unsafe extern "system" fn window_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    if msg != WM_PAINT {
+        return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) };
+    }
+    // SAFETY: painting this window on its own thread.
+    unsafe {
+        let mut ps: PAINTSTRUCT = std::mem::zeroed();
+        let dc = BeginPaint(hwnd, &mut ps);
+        PAINT.with_borrow(|p| {
+            let (bg, border, text) = if p.light {
+                (0x00F3_F3F3u32, 0x00B8_B8B8u32, 0x001A_1A1Au32)
+            } else {
+                (0x002D_2D2Du32, 0x0058_5858u32, 0x00F5_F5F5u32)
+            };
+            let brush = CreateSolidBrush(bg);
+            FillRect(dc, &ps.rcPaint, brush);
+            DeleteObject(brush as _);
+            let mut rect = RECT {
+                left: 0,
+                top: 0,
+                right: 0,
+                bottom: 0,
+            };
+            windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect(hwnd, &mut rect);
+            let frame = CreateSolidBrush(border);
+            FrameRect(dc, &rect, frame);
+            DeleteObject(frame as _);
+            let old = SelectObject(dc, p.font as _);
+            SetBkMode(dc, TRANSPARENT as i32);
+            SetTextColor(dc, text);
+            DrawTextW(
+                dc,
+                p.letters.as_ptr(),
+                p.letters.len() as i32,
+                &mut rect,
+                DT_CENTER | DT_VCENTER | DT_SINGLELINE,
+            );
+            SelectObject(dc, old);
+        });
+        EndPaint(hwnd, &ps);
+    }
+    0
+}

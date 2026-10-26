@@ -77,6 +77,26 @@ impl RuleMode {
     pub const ALL: [RuleMode; 3] = [RuleMode::Off, RuleMode::First, RuleMode::Second];
 }
 
+/// The badge with the layout's letters near the caret (`indicator.rs`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IndicatorMode {
+    Off,
+    /// For a moment when the layout changes.
+    #[default]
+    OnSwitch,
+    /// Beside the caret as it moves.
+    Always,
+}
+
+impl IndicatorMode {
+    pub const ALL: [IndicatorMode; 3] = [
+        IndicatorMode::Off,
+        IndicatorMode::OnSwitch,
+        IndicatorMode::Always,
+    ];
+}
+
 /// A rule for one program: by the file name of its exe, case-insensitive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rule {
@@ -103,6 +123,10 @@ pub struct Settings {
     pub trigger: Trigger,
     /// Caps Lock switches the layout (Shift+Caps Lock is the real one).
     pub caps_lock_switch: bool,
+    /// The badge near the caret.
+    pub indicator: IndicatorMode,
+    /// How long the badge stays when shown for a moment, milliseconds.
+    pub indicator_ms: u64,
     /// A tap of the gesture's key: held at most this long, milliseconds.
     pub tap_ms: u64,
     /// The second tap starts within this of the first one's release.
@@ -129,6 +153,8 @@ impl Default for Settings {
             close_to_tray: true,
             trigger: engine.trigger,
             caps_lock_switch: engine.caps_lock_switch,
+            indicator: IndicatorMode::OnSwitch,
+            indicator_ms: 700,
             tap_ms: engine.tap_ms,
             gap_ms: engine.gap_ms,
             cycle_ms: engine.cycle_ms,
@@ -228,6 +254,9 @@ impl Settings {
         }
         if !(200..=10_000).contains(&self.cycle_ms) {
             self.cycle_ms = d.cycle_ms;
+        }
+        if !(200..=5000).contains(&self.indicator_ms) {
+            self.indicator_ms = d.indicator_ms;
         }
         if self.layouts.len() != 2 || self.layouts[0] == self.layouts[1] {
             self.layouts.clear();

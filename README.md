@@ -27,6 +27,7 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 - **Selected text**: with nothing typed, the gesture converts the selection instead, in any program that exposes its text to UI Automation (editors, browsers, Office, messengers).
 - **Caps Lock as the layout switch**: optional; Shift+Caps Lock stays the real Caps Lock.
 - **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, grey while paused.
+- **A badge near the caret**: the layout's letters appear under the caret for a moment whenever the layout changes, or stay beside it as it moves (see [The badge near the caret](#the-badge-near-the-caret)).
 - **Rules per program**: do nothing in games and remote desktops, start a program in a given layout (see [Programs](#programs)).
 - **Any pair of installed layouts**, not only English and Russian.
 - **Light, dark or system theme.**
@@ -57,6 +58,10 @@ The program watches the keys typed since the caret last moved (a click, an arrow
 With nothing typed yet, the gesture converts the selected text, if there is one: the selection is read through UI Automation, converted character by character (each goes to the other layout of the pair) and typed over the selection, and the window is switched to the layout of the result. With no selection either, the gesture only switches the layout. Programs that do not expose their text (and terminals, where typing does not replace a selection) get the layout switch alone. Instead of two taps of Shift, the Gestures page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher).
 
 The conversion is done by erasing characters before the caret with Backspace and typing the new ones as Unicode, so it works in any program that takes keyboard input: editors, browsers, messengers, terminals. Programs that handle keys themselves (games with DirectInput, remote desktops, virtual machines) are better left alone with a rule (see [Programs](#programs)); a remote desktop, VirtualBox, VMware and Hyper-V are excluded from the start. Windows of programs running as administrator do not accept input from a program that is not, so the gesture does nothing there unless qswitch itself runs as administrator.
+
+## The badge near the caret
+
+When the layout changes, by the gesture or by Alt+Shift, a small badge with the layout's letters appears under the caret of the window in front and goes after 0.7 s, so the layout is seen where the eyes are, not in the corner of the screen. The Gestures page offers three modes: off, for a moment when the layout changes (the default, with the time it stays), or always, following the caret. The badge takes no focus and lets clicks through. Its place comes from the caret the program in front reports to Windows (editors, browsers, Office, messengers do); a program without a system caret gets the badge beside the mouse pointer instead.
 
 ## Programs
 

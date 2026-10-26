@@ -15,6 +15,7 @@ mod caption;
 mod engine;
 mod hook;
 mod icon;
+mod indicator;
 mod instance;
 mod layout;
 mod selection;

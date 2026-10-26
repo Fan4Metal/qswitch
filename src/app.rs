@@ -146,6 +146,9 @@ impl App {
             config: settings.engine_config(),
             pair,
             rules: settings.rules.clone(),
+            layouts: layouts.iter().map(|l| (l.hkl, l.code.clone())).collect(),
+            indicator: settings.indicator,
+            indicator_ms: settings.indicator_ms,
         };
         let events = hook::start(setup.clone(), cc.egui_ctx.clone());
         let tray = hwnd.and_then(Tray::new);
@@ -363,6 +366,13 @@ impl App {
             config: self.settings.engine_config(),
             pair,
             rules: self.settings.rules.clone(),
+            layouts: self
+                .layouts
+                .iter()
+                .map(|l| (l.hkl, l.code.clone()))
+                .collect(),
+            indicator: self.settings.indicator,
+            indicator_ms: self.settings.indicator_ms,
         };
         if setup != self.setup {
             self.pair = pair;

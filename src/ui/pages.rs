@@ -6,7 +6,7 @@ use egui::Ui;
 
 use crate::app::App;
 use crate::engine::Trigger;
-use crate::settings::{Rule, RuleMode, file_name};
+use crate::settings::{IndicatorMode, Rule, RuleMode, file_name};
 
 /// Width of the combo boxes.
 const COMBO: f32 = 260.0;
@@ -194,6 +194,32 @@ pub fn gestures(app: &mut App, ui: &mut Ui) {
             "Caps Lock переключает раскладку (Shift+Caps Lock — обычный Caps Lock)"
         ),
     );
+    ui.add_space(12.0);
+    ui.strong(tr!("Indication", "Индикация"));
+    ui.add_space(4.0);
+    egui::Grid::new("indication")
+        .num_columns(2)
+        .spacing([16.0, 8.0])
+        .show(ui, |ui| {
+            ui.label(tr!("Badge near the caret", "Метка у курсора ввода"));
+            egui::ComboBox::from_id_salt("indicator")
+                .width(COMBO)
+                .selected_text(indicator_label(app.settings.indicator))
+                .show_ui(ui, |ui| {
+                    for m in IndicatorMode::ALL {
+                        ui.selectable_value(&mut app.settings.indicator, m, indicator_label(m));
+                    }
+                });
+            ui.end_row();
+            if app.settings.indicator == IndicatorMode::OnSwitch {
+                ui.label(tr!("Shown for", "Показывается"));
+                ui.add(
+                    egui::Slider::new(&mut app.settings.indicator_ms, 200..=3000)
+                        .suffix(tr!(" ms", " мс")),
+                );
+                ui.end_row();
+            }
+        });
     ui.add_space(12.0);
     ui.strong(tr!("Program", "Программа"));
     ui.add_space(4.0);
@@ -390,6 +416,20 @@ fn shortened(text: &str) -> String {
         out.push('…');
     }
     out
+}
+
+fn indicator_label(m: IndicatorMode) -> String {
+    match m {
+        IndicatorMode::Off => tr!("Off", "Нет").to_owned(),
+        IndicatorMode::OnSwitch => tr!(
+            "For a moment when the layout changes",
+            "На миг при смене раскладки"
+        )
+        .to_owned(),
+        IndicatorMode::Always => {
+            tr!("Always, following the caret", "Всегда, рядом с курсором").to_owned()
+        }
+    }
 }
 
 fn trigger_label(t: Trigger) -> String {

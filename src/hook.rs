@@ -28,12 +28,12 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
     VK_CAPITAL, VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_SYSTEM_FOREGROUND,
-    GetForegroundWindow, GetMessageW, KBDLLHOOKSTRUCT, KillTimer, LLKHF_INJECTED, MSG,
-    PostThreadMessageW, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS, WM_APP,
-    WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT, WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER,
-    WM_XBUTTONDOWN,
+    CallNextHookEx, DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_OBJECT_LOCATIONCHANGE,
+    EVENT_SYSTEM_FOREGROUND, GetForegroundWindow, GetMessageW, KBDLLHOOKSTRUCT, KillTimer,
+    LLKHF_INJECTED, MSG, OBJID_CARET, PostThreadMessageW, SetTimer, SetWindowsHookExW,
+    TranslateMessage, UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_APP, WM_KEYDOWN, WM_LBUTTONDOWN, WM_MBUTTONDOWN, WM_QUIT,
+    WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
 };
 
 use crate::engine::{Effect, Engine, Key};
@@ -67,6 +67,10 @@ pub struct Setup {
     pub config: crate::engine::Config,
     pub pair: [Hkl; 2],
     pub rules: Vec<Rule>,
+    /// The installed layouts with their letters, for the badge.
+    pub layouts: Vec<(Hkl, String)>,
+    pub indicator: crate::settings::IndicatorMode,
+    pub indicator_ms: u64,
 }
 
 /// Marks the thread's own injected input (`dwExtraInfo`), which the hook
@@ -108,6 +112,8 @@ struct State {
     pair: [Hkl; 2],
     tables: std::sync::Arc<[Table; 2]>,
     rules: Vec<Rule>,
+    layouts: Vec<(Hkl, String)>,
+    indicator: Option<crate::indicator::Indicator>,
     /// Shift is held (followed here for the character tables).
     shift: bool,
     /// The foreground program's exe (a full path) and its rule.
@@ -187,12 +193,17 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             config: Default::default(),
             pair: [0, 0],
             rules: Vec::new(),
+            layouts: Vec::new(),
+            indicator: Default::default(),
+            indicator_ms: 700,
         });
     let mut state = State {
         engine: Engine::new(setup.config.clone()),
         pair: setup.pair,
         tables: std::sync::Arc::new([Table::empty(), Table::empty()]),
         rules: Vec::new(),
+        layouts: Vec::new(),
+        indicator: crate::indicator::Indicator::new(),
         shift: false,
         exe: String::new(),
         mode: None,
@@ -233,6 +244,17 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             flags,
         )
     };
+    let caret = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_LOCATIONCHANGE,
+            EVENT_OBJECT_LOCATIONCHANGE,
+            std::ptr::null_mut(),
+            Some(win_event_proc),
+            0,
+            0,
+            flags,
+        )
+    };
     let ok = !keyboard.is_null();
     if !ok {
         log::error!(
@@ -247,7 +269,12 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
     while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
         match msg.message {
             WM_TIMER => {
-                with_state(State::poll_layout);
+                with_state(|s| {
+                    s.poll_layout();
+                    if let Some(indicator) = &mut s.indicator {
+                        indicator.tick();
+                    }
+                });
             }
             WM_RELOAD => {
                 if let Some(setup) = SETUP.lock().unwrap_or_else(|e| e.into_inner()).clone() {
@@ -271,7 +298,7 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
         if !mouse.is_null() {
             UnhookWindowsHookEx(mouse);
         }
-        for hook in [foreground, focus] {
+        for hook in [foreground, focus, caret] {
             if !hook.is_null() {
                 UnhookWinEvent(hook);
             }
@@ -304,6 +331,10 @@ impl State {
             self.tables = std::sync::Arc::new([Table::of(self.pair[0]), Table::of(self.pair[1])]);
         }
         self.rules = setup.rules;
+        self.layouts = setup.layouts;
+        if let Some(indicator) = &mut self.indicator {
+            indicator.configure(setup.indicator, setup.indicator_ms);
+        }
         self.engine.set_config(setup.config);
         self.mode = rule_for(&self.rules, &self.exe);
         self.follow_mode();
@@ -440,10 +471,25 @@ impl State {
         }
     }
 
+    /// The letters of a layout, for the badge.
+    fn letters_of(&self, hkl: Hkl) -> String {
+        self.layouts.iter().find(|(h, _)| *h == hkl).map_or_else(
+            || format!("{:04X}", (hkl as u32) & 0xFFFF),
+            |(_, code)| code.clone(),
+        )
+    }
+
     fn poll_layout(&mut self) {
         let Some(hkl) = layout::current() else { return };
         if self.last_layout != Some(hkl) {
+            // The first layout seen (at start, after new settings) is no
+            // change to announce.
+            let flash = self.last_layout.is_some();
             self.last_layout = Some(hkl);
+            let letters = self.letters_of(hkl);
+            if let Some(indicator) = &mut self.indicator {
+                indicator.set_letters(&letters, flash);
+            }
             if tracing() {
                 self.send(Event::Trace(format!("layout {:08x}", hkl as u32)));
             }
@@ -458,6 +504,9 @@ impl State {
     /// was typed is forgotten.
     fn foreground_changed(&mut self, hwnd: isize) {
         self.engine.reset();
+        if let Some(indicator) = &mut self.indicator {
+            indicator.foreground_changed();
+        }
         let exe = process_name(hwnd).unwrap_or_default();
         if tracing() {
             self.send(Event::Trace(format!("foreground {hwnd:#x} {exe}")));
@@ -611,12 +660,23 @@ unsafe extern "system" fn win_event_proc(
     _hook: HWINEVENTHOOK,
     event: u32,
     hwnd: HWND,
-    _object: i32,
+    object: i32,
     _child: i32,
-    _thread: u32,
+    thread: u32,
     _time: u32,
 ) {
     match event {
+        EVENT_OBJECT_LOCATIONCHANGE => {
+            if object == OBJID_CARET
+                && let Some(rect) = crate::indicator::caret_of_thread(thread)
+            {
+                with_state(|s| {
+                    if let Some(indicator) = &mut s.indicator {
+                        indicator.caret_moved(rect);
+                    }
+                });
+            }
+        }
         EVENT_SYSTEM_FOREGROUND => {
             with_state(|s| s.foreground_changed(hwnd as isize));
         }
