@@ -49,6 +49,14 @@ windows-sys = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",   # windows, hooks, messages
 ] }
 
+# UI Automation (COM interfaces) for the selected text (selection.rs);
+# windows-sys stays for the rest.
+windows = { version = "0.62", features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+] }
+
 [target.'cfg(windows)'.build-dependencies]
 # Embeds the icon and the version information into the exe.
 winresource = "0.1"

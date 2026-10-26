@@ -92,13 +92,21 @@ thread_local! {
 #[derive(Debug)]
 enum Job {
     Switch(Hkl),
-    Replace { backspaces: usize, text: String },
+    Replace {
+        backspaces: usize,
+        text: String,
+    },
+    /// Convert the selected text, else switch the layout; `index` is the
+    /// layout of the pair the window is in.
+    Selection {
+        index: Option<u8>,
+    },
 }
 
 struct State {
     engine: Engine,
     pair: [Hkl; 2],
-    tables: [Table; 2],
+    tables: std::sync::Arc<[Table; 2]>,
     rules: Vec<Rule>,
     /// Shift is held (followed here for the character tables).
     shift: bool,
@@ -183,7 +191,7 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
     let mut state = State {
         engine: Engine::new(setup.config.clone()),
         pair: setup.pair,
-        tables: [Table::empty(), Table::empty()],
+        tables: std::sync::Arc::new([Table::empty(), Table::empty()]),
         rules: Vec::new(),
         shift: false,
         exe: String::new(),
@@ -293,7 +301,7 @@ impl State {
     fn apply(&mut self, setup: Setup) {
         if setup.pair != self.pair || self.last_layout.is_none() {
             self.pair = setup.pair;
-            self.tables = [Table::of(self.pair[0]), Table::of(self.pair[1])];
+            self.tables = std::sync::Arc::new([Table::of(self.pair[0]), Table::of(self.pair[1])]);
         }
         self.rules = setup.rules;
         self.engine.set_config(setup.config);
@@ -357,12 +365,9 @@ impl State {
             match effect {
                 Effect::SwitchLayout(i) => self.jobs.push_back(Job::Switch(self.pair[i as usize])),
                 Effect::ToggleLayout => {
-                    let target = match index {
-                        Some(0) => self.pair[1],
-                        _ => self.pair[0],
-                    };
-                    self.jobs.push_back(Job::Switch(target));
+                    self.jobs.push_back(Job::Switch(other_of(self.pair, index)))
                 }
+                Effect::ConvertSelection => self.jobs.push_back(Job::Selection { index }),
                 Effect::Replace { backspaces, text } => {
                     self.jobs.push_back(Job::Replace { backspaces, text })
                 }
@@ -389,7 +394,49 @@ impl State {
                     // Seen by the next poll; the tray follows then.
                 }
                 Job::Replace { backspaces, text } => inject(backspaces, &text),
+                Job::Selection { index } => self.convert_selection(index),
             }
+        }
+    }
+
+    /// The selected text converted on a thread of its own (UIA may take a
+    /// while, and the hook callback must not wait); no selection, or a
+    /// terminal in front: the layout alone.
+    fn convert_selection(&mut self, index: Option<u8>) {
+        let other = other_of(self.pair, index);
+        if crate::selection::is_terminal(&self.exe) {
+            layout::switch_to(other);
+            return;
+        }
+        let tables = self.tables.clone();
+        let pair = self.pair;
+        let exe = self.exe.clone();
+        let events = self.events.clone();
+        let ctx = self.ctx.clone();
+        let trace = tracing();
+        let spawned = std::thread::Builder::new()
+            .name("selection".into())
+            .spawn(move || {
+                let text = crate::selection::selected_text();
+                if trace {
+                    let _ = events.send(Event::Trace(format!("selection {text:?}")));
+                }
+                let converted = text
+                    .as_deref()
+                    .map(|t| layout::convert_text(t, &tables, index));
+                match (text, converted) {
+                    (Some(from), Some((to, Some(target)))) if to != from => {
+                        inject(0, &to);
+                        layout::switch_to(pair[target as usize]);
+                        let _ = events.send(Event::Converted { from, to, exe });
+                    }
+                    _ => layout::switch_to(other),
+                }
+                ctx.request_repaint();
+            });
+        if let Err(e) = spawned {
+            log::warn!("selection thread not started: {e}");
+            layout::switch_to(other);
         }
     }
 
@@ -436,9 +483,19 @@ impl State {
     }
 }
 
+/// The layout of the pair the window is not in (the first, when it is in
+/// neither).
+fn other_of(pair: [Hkl; 2], index: Option<u8>) -> Hkl {
+    match index {
+        Some(0) => pair[1],
+        _ => pair[0],
+    }
+}
+
 /// Erase `backspaces` characters before the caret and type `text`, as
 /// Unicode (`KEYEVENTF_UNICODE`: the same whatever layout the window is
-/// in), marked as the program's own so the hook lets it by.
+/// in), marked as the program's own so the hook lets it by. A line break
+/// is typed as Enter, a tab as Tab.
 fn inject(backspaces: usize, text: &str) {
     let mut inputs: Vec<INPUT> = Vec::with_capacity(backspaces * 2 + text.len() * 2);
     let key = |vk: u16, scan: u16, flags: u32| {
@@ -456,9 +513,23 @@ fn inject(backspaces: usize, text: &str) {
         inputs.push(key(VK_BACK, 0, 0));
         inputs.push(key(VK_BACK, 0, KEYEVENTF_KEYUP));
     }
-    for unit in text.encode_utf16() {
-        inputs.push(key(0, unit, KEYEVENTF_UNICODE));
-        inputs.push(key(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+    for ch in text.chars() {
+        let control = match ch {
+            '\r' => continue,
+            '\n' => Some(0x0Du16),
+            '\t' => Some(0x09u16),
+            _ => None,
+        };
+        if let Some(vk) = control {
+            inputs.push(key(vk, 0, 0));
+            inputs.push(key(vk, 0, KEYEVENTF_KEYUP));
+            continue;
+        }
+        let mut units = [0u16; 2];
+        for unit in ch.encode_utf16(&mut units) {
+            inputs.push(key(0, *unit, KEYEVENTF_UNICODE));
+            inputs.push(key(0, *unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP));
+        }
     }
     if inputs.is_empty() {
         return;

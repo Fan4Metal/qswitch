@@ -140,6 +140,9 @@ pub fn switch_to(hkl: Hkl) {
 pub struct Table {
     /// `[vk][shift | caps << 1]`.
     chars: Vec<[Option<char>; 4]>,
+    /// The key (vk, modifier index) that types each character, the first
+    /// found with the fewest modifiers.
+    keys: std::collections::HashMap<char, (u16, usize)>,
 }
 
 impl Table {
@@ -147,13 +150,46 @@ impl Table {
     pub fn empty() -> Table {
         Table {
             chars: vec![[None; 4]; 256],
+            keys: std::collections::HashMap::new(),
         }
     }
 
     pub fn get(&self, vk: u16, shift: bool, caps: bool) -> Option<char> {
-        self.chars
-            .get(vk as usize)
-            .and_then(|c| c[usize::from(shift) | usize::from(caps) << 1])
+        self.get_mod(vk, usize::from(shift) | usize::from(caps) << 1)
+    }
+
+    /// By the modifier index (`shift | caps << 1`).
+    pub fn get_mod(&self, vk: u16, modifiers: usize) -> Option<char> {
+        self.chars.get(vk as usize).and_then(|c| c[modifiers])
+    }
+
+    /// The key and modifiers that type `ch`, if any.
+    pub fn key_of(&self, ch: char) -> Option<(u16, usize)> {
+        self.keys.get(&ch).copied()
+    }
+
+    /// Fills `keys` from `chars`: the plain key first, then with Shift,
+    /// then with Caps Lock.
+    fn index(mut self) -> Table {
+        self.keys.clear();
+        for modifiers in 0..4 {
+            for (vk, slot) in self.chars.iter().enumerate() {
+                if let Some(ch) = slot[modifiers] {
+                    self.keys.entry(ch).or_insert((vk as u16, modifiers));
+                }
+            }
+        }
+        self
+    }
+
+    /// A table from what each key types, for tests.
+    #[cfg(test)]
+    pub fn from_keys(keys: &[(u16, [Option<char>; 4])]) -> Table {
+        let mut table = Table::empty();
+        for &(vk, chars) in keys {
+            table.chars[vk as usize] = chars;
+        }
+        table.index()
     }
 
     /// Builds a table for a layout with `ToUnicodeEx`, which is asked not
@@ -205,13 +241,89 @@ impl Table {
                 }
             }
         }
-        Table { chars }
+        Table {
+            chars,
+            keys: std::collections::HashMap::new(),
+        }
+        .index()
     }
+}
+
+/// `text` with every character replaced by what its key types in the
+/// other layout of the pair: a character of the layout `current` (else of
+/// either, the first of the pair tried first) is looked up by key and read
+/// in the other table; one found in neither stays. Also the layout the
+/// last converted character went to, to switch the window to.
+pub fn convert_text(text: &str, tables: &[Table; 2], current: Option<u8>) -> (String, Option<u8>) {
+    let order: [usize; 2] = if current == Some(1) { [1, 0] } else { [0, 1] };
+    let mut out = String::with_capacity(text.len());
+    let mut target = None;
+    for ch in text.chars() {
+        let mut converted = None;
+        for src in order {
+            if let Some((vk, modifiers)) = tables[src].key_of(ch)
+                && let Some(other) = tables[1 - src].get_mod(vk, modifiers)
+            {
+                converted = Some((other, 1 - src));
+                break;
+            }
+        }
+        match converted {
+            Some((other, to)) => {
+                out.push(other);
+                if other != ch {
+                    target = Some(to as u8);
+                }
+            }
+            None => out.push(ch),
+        }
+    }
+    (out, target)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two keys of a made-up pair: Q/Й and the period/Ю key, with Shift.
+    fn pair() -> [Table; 2] {
+        let en = Table::from_keys(&[
+            (0x51, [Some('q'), Some('Q'), Some('Q'), Some('q')]),
+            (0xBE, [Some('.'), Some('>'), Some('.'), Some('>')]),
+            (0x20, [Some(' '); 4]),
+        ]);
+        let ru = Table::from_keys(&[
+            (0x51, [Some('й'), Some('Й'), Some('Й'), Some('й')]),
+            (0xBE, [Some('ю'), Some('Ю'), Some('Ю'), Some('ю')]),
+            (0x20, [Some(' '); 4]),
+        ]);
+        [en, ru]
+    }
+
+    #[test]
+    fn text_is_converted_by_keys_both_ways() {
+        let tables = pair();
+        assert_eq!(
+            convert_text("qQ. 7", &tables, Some(0)),
+            ("йЙю 7".to_owned(), Some(1))
+        );
+        assert_eq!(
+            convert_text("йЙю", &tables, Some(1)),
+            ("qQ.".to_owned(), Some(0))
+        );
+        // Mixed text: each character goes to the other layout.
+        assert_eq!(
+            convert_text("qй", &tables, None),
+            ("йq".to_owned(), Some(0))
+        );
+        // Nothing known: unchanged, no layout to switch to.
+        assert_eq!(
+            convert_text("7 ", &tables, Some(0)),
+            ("7 ".to_owned(), None)
+        );
+        // Caps Lock on: the plain key is preferred, so 'Q' maps by Shift.
+        assert_eq!(tables[0].key_of('Q'), Some((0x51, 1)));
+    }
 
     #[test]
     fn ids_are_hex_of_the_handle() {

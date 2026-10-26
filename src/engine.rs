@@ -125,6 +125,9 @@ pub enum Effect {
     SwitchLayout(u8),
     /// The other layout of the pair than the window is in now.
     ToggleLayout,
+    /// Nothing typed: convert the selected text if there is one (the
+    /// hook thread reads it), else the layout alone.
+    ConvertSelection,
     /// Erase this many characters before the caret and type `text`.
     Replace { backspaces: usize, text: String },
     /// For the window's list: what was on the screen and what is now.
@@ -477,8 +480,8 @@ impl Engine {
         let earlier = self.line.iter().filter(|t| !t.is_space()).count() - word_len;
         let next = match stage {
             None if word_len == 0 => {
-                // Nothing to convert: the layout alone.
-                verdict.effects.push(Effect::ToggleLayout);
+                // Nothing typed: the selection, or the layout alone.
+                verdict.effects.push(Effect::ConvertSelection);
                 return;
             }
             None => Stage::Word,
@@ -726,12 +729,12 @@ mod tests {
     }
 
     #[test]
-    fn nothing_typed_only_switches() {
+    fn nothing_typed_goes_for_the_selection() {
         let mut t = Typer::new(Config::default());
         let effects = t.double_shift();
-        assert_eq!(effects, vec![Effect::ToggleLayout]);
+        assert_eq!(effects, vec![Effect::ConvertSelection]);
         t.type_text("   ");
-        assert_eq!(t.double_shift(), vec![Effect::ToggleLayout]);
+        assert_eq!(t.double_shift(), vec![Effect::ConvertSelection]);
     }
 
     #[test]

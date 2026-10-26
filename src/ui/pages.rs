@@ -111,7 +111,11 @@ pub fn status(app: &mut App, ui: &mut Ui) {
                         format!("{} мин назад", ago / 60)
                     )
                 });
-                ui.label(format!("{} → {}", c.from, c.to));
+                ui.horizontal(|ui| {
+                    ui.label(shortened(&c.from));
+                    arrow(ui);
+                    ui.label(shortened(&c.to));
+                });
                 ui.weak(file_name(&c.exe));
                 ui.end_row();
             }
@@ -362,6 +366,30 @@ fn add_rule(app: &mut App, exe: String) {
         exe: file_name(&exe).to_owned(),
         mode: RuleMode::Off,
     });
+}
+
+/// A painted arrow (the default fonts lack "→").
+fn arrow(ui: &mut Ui) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+    let color = ui.visuals().weak_text_color();
+    crate::ui::icons::paint(
+        ui.painter(),
+        crate::ui::icons::Icon::Next,
+        rect.center(),
+        12.0,
+        color,
+        ui.visuals().panel_fill,
+    );
+}
+
+/// A selection can be long: the first line, at most 40 characters.
+fn shortened(text: &str) -> String {
+    let line = text.lines().next().unwrap_or("");
+    let mut out: String = line.chars().take(40).collect();
+    if out.len() < text.len() {
+        out.push('…');
+    }
+    out
 }
 
 fn trigger_label(t: Trigger) -> String {

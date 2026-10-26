@@ -24,6 +24,7 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 ## Features
 
 - **Two taps of Shift**: the last word is converted into the other layout and the layout is switched (see [The gesture](#the-gesture)). The same gesture repeated converts the whole line, and once more puts everything back.
+- **Selected text**: with nothing typed, the gesture converts the selection instead, in any program that exposes its text to UI Automation (editors, browsers, Office, messengers).
 - **Caps Lock as the layout switch**: optional; Shift+Caps Lock stays the real Caps Lock.
 - **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, grey while paused.
 - **Rules per program**: do nothing in games and remote desktops, start a program in a given layout (see [Programs](#programs)).
@@ -53,7 +54,7 @@ The program watches the keys typed since the caret last moved (a click, an arrow
 | The second, within 1.5 s | The whole line typed since the caret last moved is converted the same way. |
 | The third | Everything is put back as it was typed, and the layout too. |
 
-With nothing typed yet, the gesture only switches the layout. Instead of two taps of Shift, the Gestures page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher).
+With nothing typed yet, the gesture converts the selected text, if there is one: the selection is read through UI Automation, converted character by character (each goes to the other layout of the pair) and typed over the selection, and the window is switched to the layout of the result. With no selection either, the gesture only switches the layout. Programs that do not expose their text (and terminals, where typing does not replace a selection) get the layout switch alone. Instead of two taps of Shift, the Gestures page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher).
 
 The conversion is done by erasing characters before the caret with Backspace and typing the new ones as Unicode, so it works in any program that takes keyboard input: editors, browsers, messengers, terminals. Programs that handle keys themselves (games with DirectInput, remote desktops, virtual machines) are better left alone with a rule (see [Programs](#programs)); a remote desktop, VirtualBox, VMware and Hyper-V are excluded from the start. Windows of programs running as administrator do not accept input from a program that is not, so the gesture does nothing there unless qswitch itself runs as administrator.
 
@@ -76,7 +77,7 @@ A click on the icon opens the window; its menu has **Show**, **Pause** (every ke
 
 | Key | Action |
 |---|---|
-| `Shift` `Shift` | Convert the last word, the line, back (the default gesture, see above) |
+| `Shift` `Shift` | Convert the last word, the line, back; with nothing typed, the selected text (the default gesture, see above) |
 | `F1` | About |
 
 ## Update check and privacy

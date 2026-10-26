@@ -17,6 +17,7 @@ mod hook;
 mod icon;
 mod instance;
 mod layout;
+mod selection;
 mod settings;
 mod tray;
 mod ui;
