@@ -119,6 +119,9 @@ pub struct Settings {
     /// The window's close button hides it to the tray; off, it ends the
     /// program.
     pub close_to_tray: bool,
+    /// The Status page lists the last conversions (in memory only); off,
+    /// nothing of them is kept.
+    pub keep_conversions: bool,
     /// The gesture that converts what was typed.
     pub trigger: Trigger,
     /// Caps Lock switches the layout (Shift+Caps Lock is the real one).
@@ -148,6 +151,7 @@ impl Default for Settings {
             last_update_check: 0,
             window: None,
             close_to_tray: true,
+            keep_conversions: true,
             trigger: engine.trigger,
             caps_lock_switch: engine.caps_lock_switch,
             indicator: IndicatorMode::OnSwitch,
@@ -339,6 +343,7 @@ mod tests {
         assert_eq!(settings.theme, ThemeSetting::Dark);
         assert_eq!(settings.trigger, Trigger::Pause);
         assert!(settings.close_to_tray);
+        assert!(settings.keep_conversions);
         assert_eq!(settings.rule_for(r"C:\Games\game.exe"), Some(RuleMode::Off));
         assert_eq!(settings.rule_for("other.exe"), None);
     }

@@ -88,7 +88,7 @@ A click on the icon opens the window; its menu has **Show**, **Pause** (every ke
 
 The update check is optional and off by default. With **Check for updates at start-up (once a day)** enabled in the About window, the program asks the GitHub Releases API (`api.github.com`) for the latest release at most once a day; **Check now** in the same window asks at once. The request carries nothing but the program version in its `User-Agent` header, and nothing is downloaded or installed: when a newer release exists, a button with its version appears beside the About button and opens the release page in the browser. Otherwise the program does not access the network.
 
-The keys typed are kept in memory only as long as they can still be converted (until the caret moves), and are never written to disk; the Status page's list of recent conversions lives in memory and goes with the program. The one exception is the check box on the Status page that writes a trace of the keys to a file next to the settings, for finding out what a program does with the converted text; it is off at every start.
+The keys typed are kept in memory only as long as they can still be converted (until the caret moves), and are never written to disk; the Status page's list of recent conversions lives in memory and goes with the program, and its check box turns it off altogether. The one exception is the check box on the Status page that writes a trace of the keys to a file next to the settings, for finding out what a program does with the converted text; it is off at every start.
 
 ## Building
 

@@ -263,6 +263,9 @@ impl App {
                 Event::Layout { hkl, index } => self.current = Some((hkl, index)),
                 Event::Foreground { exe, mode } => self.foreground = (exe, mode),
                 Event::Converted { from, to, exe } => {
+                    if !self.settings.keep_conversions {
+                        continue;
+                    }
                     self.conversions.push_front(Conversion {
                         from,
                         to,

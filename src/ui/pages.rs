@@ -84,13 +84,28 @@ pub fn status(app: &mut App, ui: &mut Ui) {
             ui.end_row();
         });
     ui.add_space(12.0);
-    ui.strong(tr!("Recent conversions", "Последние преобразования"));
-    ui.weak(tr!(
-        "Kept in memory while the program runs; nothing typed is written to disk.",
-        "Хранятся в памяти, пока программа работает; набранное на диск не пишется."
-    ));
+    let heading = egui::RichText::new(tr!("Recent conversions", "Последние преобразования"));
+    if ui
+        .checkbox(&mut app.settings.keep_conversions, heading.strong())
+        .changed()
+        && !app.settings.keep_conversions
+    {
+        // Off: what was kept goes at once.
+        app.conversions.clear();
+    }
+    if app.settings.keep_conversions {
+        ui.weak(tr!(
+            "Kept in memory while the program runs; nothing typed is written to disk.",
+            "Хранятся в памяти, пока программа работает; набранное на диск не пишется."
+        ));
+    } else {
+        ui.weak(tr!(
+            "Off: conversions are not kept, not even in memory.",
+            "Выключено: преобразования не хранятся, даже в памяти."
+        ));
+    }
     ui.add_space(4.0);
-    if app.conversions.is_empty() {
+    if app.settings.keep_conversions && app.conversions.is_empty() {
         ui.label(tr!(
             "None yet. Type a word in the wrong layout and tap Shift twice.",
             "Пока нет. Наберите слово не в той раскладке и дважды нажмите Shift."
