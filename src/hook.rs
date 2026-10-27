@@ -80,6 +80,9 @@ const MAGIC: usize = 0x7153_7769;
 const WM_RELOAD: u32 = WM_APP + 1;
 /// Jobs are waiting.
 const WM_JOB: u32 = WM_APP + 2;
+/// The tray icon was clicked: toggle the layout of the window in front
+/// before the taskbar.
+const WM_TOGGLE: u32 = WM_APP + 3;
 /// How often the layout is looked at (it changes by Alt+Shift too).
 const POLL_MS: u32 = 150;
 
@@ -119,6 +122,11 @@ struct State {
     /// The foreground program's exe (a full path) and its rule.
     exe: String,
     mode: Option<RuleMode>,
+    /// The last window in front that is not the taskbar's (a click on
+    /// the tray icon brings the taskbar forward), when it is a program's
+    /// window ([`is_app_window`]; 0 after the desktop, the Start menu,
+    /// Alt+Tab): the tray's toggle switches its layout.
+    app_window: isize,
     last_layout: Option<Hkl>,
     jobs: VecDeque<Job>,
     events: Sender<Event>,
@@ -165,6 +173,12 @@ pub fn set_paused(paused: bool) {
     post(WM_RELOAD);
 }
 
+/// The tray icon clicked: the window that was in front before the
+/// taskbar takes the other layout of the pair (the focus stays put).
+pub fn toggle_layout() {
+    post(WM_TOGGLE);
+}
+
 /// End the thread (the hooks are removed with it).
 pub fn stop() {
     post(WM_QUIT);
@@ -207,6 +221,7 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
         shift: false,
         exe: String::new(),
         mode: None,
+        app_window: 0,
         last_layout: None,
         jobs: VecDeque::new(),
         events,
@@ -283,6 +298,9 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             }
             WM_JOB => {
                 with_state(State::run_jobs);
+            }
+            WM_TOGGLE => {
+                with_state(State::toggle_from_tray);
             }
             _ => unsafe {
                 TranslateMessage(&msg);
@@ -430,6 +448,65 @@ impl State {
         }
     }
 
+    /// [`toggle_layout`]: the window in front before the taskbar takes the
+    /// other layout of the pair, and so does the window in front now (the
+    /// taskbar): with one input method for all windows (the Windows
+    /// default) that is the one that counts. No window is moved.
+    fn toggle_from_tray(&mut self) {
+        let Some(window) = self.tray_target() else {
+            // No program's window at all: the layout of what is in front.
+            let index = layout::current().and_then(|h| self.index_of(h));
+            let hkl = other_of(self.pair, index);
+            if tracing() {
+                self.send(Event::Trace(format!(
+                    "tray toggle, no window -> {:08x}",
+                    hkl as u32
+                )));
+            }
+            layout::switch_to(hkl);
+            return;
+        };
+        let index = self.index_of(layout::layout_of(window));
+        let hkl = other_of(self.pair, index);
+        if tracing() {
+            self.send(Event::Trace(format!(
+                "tray toggle {window:#x} {} -> {:08x}",
+                class_of(window),
+                hkl as u32
+            )));
+        }
+        layout::switch_window(window, hkl);
+        layout::switch_to(hkl);
+        // The tray's letters follow at once, not at the next poll.
+        self.poll_layout();
+    }
+
+    /// The window the tray's toggle is for: the last program's window in
+    /// front, else (it was closed, minimized, or its coming forward was
+    /// missed) the topmost program's window on the screen.
+    fn tray_target(&self) -> Option<isize> {
+        use windows_sys::Win32::UI::WindowsAndMessaging::IsWindow;
+        let noted = self.app_window;
+        if noted != 0 && unsafe { IsWindow(noted as _) } != 0 && is_app_window(noted) {
+            return Some(noted);
+        }
+        top_app_window()
+    }
+
+    /// The layout the tray shows: the foreground window's, or while the
+    /// taskbar is in front (the icon was just clicked), that of the
+    /// window the toggle is for.
+    fn shown_layout(&self) -> Option<Hkl> {
+        let foreground = unsafe { GetForegroundWindow() } as isize;
+        if foreground != 0
+            && is_taskbar(foreground)
+            && let Some(window) = self.tray_target()
+        {
+            return Some(layout::layout_of(window));
+        }
+        layout::current()
+    }
+
     /// The selected text converted on a thread of its own (UIA may take a
     /// while, and the hook callback must not wait); no selection, or a
     /// terminal in front: the layout alone.
@@ -480,7 +557,9 @@ impl State {
     }
 
     fn poll_layout(&mut self) {
-        let Some(hkl) = layout::current() else { return };
+        let Some(hkl) = self.shown_layout() else {
+            return;
+        };
         if self.last_layout != Some(hkl) {
             // The first layout seen (at start, after new settings) is no
             // change to announce.
@@ -503,13 +582,20 @@ impl State {
     /// Another window is in front: its program's rule applies, and what
     /// was typed is forgotten.
     fn foreground_changed(&mut self, hwnd: isize) {
+        if hwnd != 0 && !is_taskbar(hwnd) {
+            self.app_window = if is_app_window(hwnd) { hwnd } else { 0 };
+        }
         self.engine.reset();
         if let Some(indicator) = &mut self.indicator {
             indicator.foreground_changed();
         }
         let exe = process_name(hwnd).unwrap_or_default();
         if tracing() {
-            self.send(Event::Trace(format!("foreground {hwnd:#x} {exe}")));
+            self.send(Event::Trace(format!(
+                "foreground {hwnd:#x} {} {exe} app_window={:#x}",
+                class_of(hwnd),
+                self.app_window
+            )));
         }
         if exe != self.exe || self.last_layout.is_none() {
             self.exe = exe;
@@ -531,6 +617,77 @@ impl State {
         self.poll_layout();
     }
 }
+
+/// The taskbar or the tray's overflow, which come forward on a click on
+/// the tray icon.
+fn is_taskbar(hwnd: isize) -> bool {
+    TASKBAR_CLASSES.contains(&class_of(hwnd).as_str())
+}
+
+fn class_of(hwnd: isize) -> String {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClassNameW;
+    let mut buf = [0u16; 128];
+    let len = unsafe { GetClassNameW(hwnd as _, buf.as_mut_ptr(), buf.len() as i32) };
+    String::from_utf16_lossy(&buf[..len.max(0) as usize])
+}
+
+/// A program's window that the tray's toggle may bring back: shown, not
+/// minimized, not cloaked (the Start menu and other shell surfaces when
+/// closed, windows of other desktops), not a tool window, not the desktop.
+fn is_app_window(hwnd: isize) -> bool {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GWL_EXSTYLE, GetWindowLongW, IsIconic, IsWindowVisible, WS_EX_TOOLWINDOW,
+    };
+    #[link(name = "dwmapi")]
+    unsafe extern "system" {
+        fn DwmGetWindowAttribute(
+            hwnd: isize,
+            attribute: u32,
+            value: *mut core::ffi::c_void,
+            size: u32,
+        ) -> i32;
+    }
+    const DWMWA_CLOAKED: u32 = 14;
+    if hwnd == 0
+        || unsafe { IsWindowVisible(hwnd as _) } == 0
+        || unsafe { IsIconic(hwnd as _) } != 0
+    {
+        return false;
+    }
+    let ex_style = unsafe { GetWindowLongW(hwnd as _, GWL_EXSTYLE) } as u32;
+    if ex_style & WS_EX_TOOLWINDOW != 0 {
+        return false;
+    }
+    let mut cloaked = 0u32;
+    let got = unsafe { DwmGetWindowAttribute(hwnd, DWMWA_CLOAKED, (&raw mut cloaked).cast(), 4) };
+    if got == 0 && cloaked != 0 {
+        return false;
+    }
+    !DESKTOP_CLASSES.contains(&class_of(hwnd).as_str())
+}
+
+const DESKTOP_CLASSES: [&str; 2] = ["Progman", "WorkerW"];
+
+/// The topmost program's window in the z-order ([`is_app_window`], not
+/// the taskbar's).
+fn top_app_window() -> Option<isize> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GW_HWNDNEXT, GetTopWindow, GetWindow};
+    let mut hwnd = unsafe { GetTopWindow(std::ptr::null_mut()) } as isize;
+    while hwnd != 0 {
+        if !is_taskbar(hwnd) && is_app_window(hwnd) {
+            return Some(hwnd);
+        }
+        hwnd = unsafe { GetWindow(hwnd as _, GW_HWNDNEXT) } as isize;
+    }
+    None
+}
+
+const TASKBAR_CLASSES: [&str; 4] = [
+    "Shell_TrayWnd",
+    "Shell_SecondaryTrayWnd",
+    "NotifyIconOverflowWindow",
+    "TopLevelWindowForOverflowXamlIsland",
+];
 
 /// The layout of the pair the window is not in (the first, when it is in
 /// neither).

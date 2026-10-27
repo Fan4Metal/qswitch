@@ -75,7 +75,7 @@ The second button under the list adds the program that was in front before the q
 
 ## Pause and the notification area
 
-A click on the icon opens the window; its menu has **Show**, **Pause** (every key goes through untouched, the icon turns grey) and **Exit**. The window's close button hides it to the notification area (a setting on the Gestures page); the program is ended from the icon's menu. A second start of `qswitch.exe` only brings the window of the running copy forward; `qswitch.exe --pause`, `--resume` and `--quit` tell the running copy what to do (for scripts and game launchers), `--hidden` starts it without the window (the autostart entry).
+A click on the icon only switches the layout of the window that was in front, and the focus stays where it is; qswitch's own window opens from the icon's menu, which has **Show**, **Pause** (every key goes through untouched, the icon turns grey) and **Exit**. The window's close button hides it to the notification area (a setting on the Gestures page); the program is ended from the icon's menu. A second start of `qswitch.exe` only brings the window of the running copy forward; `qswitch.exe --pause`, `--resume` and `--quit` tell the running copy what to do (for scripts and game launchers), `--hidden` starts it without the window (the autostart entry).
 
 ## Keyboard shortcuts
 

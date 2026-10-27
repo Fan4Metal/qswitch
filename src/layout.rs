@@ -117,19 +117,43 @@ pub fn current() -> Option<Hkl> {
 /// which the window's default procedure answers by activating it).
 #[cfg(windows)]
 pub fn switch_to(hkl: Hkl) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow;
+    let foreground = unsafe { GetForegroundWindow() } as isize;
+    if let Some(target) = target_window() {
+        request(target, foreground, hkl);
+    }
+}
+
+/// [`switch_to`] for `window`, in front or not: the control with the focus
+/// in its thread is asked, and the window itself.
+#[cfg(windows)]
+pub fn switch_window(window: isize, hkl: Hkl) {
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        GetForegroundWindow, PostMessageW, WM_INPUTLANGCHANGEREQUEST,
+        GUITHREADINFO, GetGUIThreadInfo, GetWindowThreadProcessId,
     };
-    let Some(target) = target_window() else {
-        return;
+    let thread = unsafe { GetWindowThreadProcessId(window as _, std::ptr::null_mut()) };
+    let mut info: GUITHREADINFO = unsafe { std::mem::zeroed() };
+    info.cbSize = size_of::<GUITHREADINFO>() as u32;
+    let focus = if thread != 0
+        && unsafe { GetGUIThreadInfo(thread, &mut info) } != 0
+        && !info.hwndFocus.is_null()
+    {
+        info.hwndFocus as isize
+    } else {
+        window
     };
+    request(focus, window, hkl);
+}
+
+#[cfg(windows)]
+fn request(target: isize, frame: isize, hkl: Hkl) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{PostMessageW, WM_INPUTLANGCHANGEREQUEST};
     unsafe {
         PostMessageW(target as _, WM_INPUTLANGCHANGEREQUEST, 0, hkl);
         // A control inside answers for its thread, but a frame window of
         // another thread (a UWP app's) is asked too.
-        let foreground = GetForegroundWindow() as isize;
-        if foreground != target && foreground != 0 {
-            PostMessageW(foreground as _, WM_INPUTLANGCHANGEREQUEST, 0, hkl);
+        if frame != target && frame != 0 {
+            PostMessageW(frame as _, WM_INPUTLANGCHANGEREQUEST, 0, hkl);
         }
     }
 }

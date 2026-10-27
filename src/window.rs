@@ -202,10 +202,9 @@ unsafe extern "system" fn window_proc(
         const NIN_KEYSELECT: u32 = 0x401;
         const WM_CONTEXTMENU: u32 = 0x007B;
         match lparam as u32 & 0xFFFF {
-            NIN_SELECT | NIN_KEYSELECT => {
-                bring_back(hwnd as isize);
-                hook(Hooked::Tray(TrayCmd::Show));
-            }
+            // A click (or Enter on the icon): the layout, nothing else;
+            // the window opens from the menu only.
+            NIN_SELECT | NIN_KEYSELECT => crate::hook::toggle_layout(),
             WM_CONTEXTMENU => {
                 let x = (wparam & 0xFFFF) as u16 as i16 as i32;
                 let y = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
