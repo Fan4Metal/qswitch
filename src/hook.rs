@@ -83,6 +83,8 @@ const WM_JOB: u32 = WM_APP + 2;
 /// The tray icon was clicked: toggle the layout of the window in front
 /// before the taskbar.
 const WM_TOGGLE: u32 = WM_APP + 3;
+/// The caret thread answered (`CARET_ANSWER`).
+const WM_CARET: u32 = WM_APP + 4;
 /// How often the layout is looked at (it changes by Alt+Shift too).
 const POLL_MS: u32 = 150;
 
@@ -90,6 +92,9 @@ static SETUP: Mutex<Option<Setup>> = Mutex::new(None);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static TRACE: AtomicBool = AtomicBool::new(false);
 static THREAD: AtomicU32 = AtomicU32::new(0);
+/// The caret thread's last answer: the question's number and the caret.
+static CARET_ANSWER: Mutex<Option<(u64, Option<windows_sys::Win32::Foundation::RECT>)>> =
+    Mutex::new(None);
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
@@ -227,6 +232,12 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
         events,
         ctx,
     };
+    if let Some(indicator) = &mut state.indicator {
+        indicator.set_finder(crate::caret::spawn(|id, caret| {
+            *CARET_ANSWER.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, caret));
+            post(WM_CARET);
+        }));
+    }
     state.apply(setup);
     state.foreground_changed(unsafe { GetForegroundWindow() } as isize);
     state.poll_layout();
@@ -301,6 +312,19 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             }
             WM_TOGGLE => {
                 with_state(State::toggle_from_tray);
+            }
+            WM_CARET => {
+                let answer = CARET_ANSWER
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .take();
+                if let Some((id, caret)) = answer {
+                    with_state(|s| {
+                        if let Some(indicator) = &mut s.indicator {
+                            indicator.caret_found(id, caret);
+                        }
+                    });
+                }
             }
             _ => unsafe {
                 TranslateMessage(&msg);
@@ -835,12 +859,14 @@ unsafe extern "system" fn win_event_proc(
 ) {
     match event {
         EVENT_OBJECT_LOCATIONCHANGE => {
-            if object == OBJID_CARET
-                && let Some(rect) = crate::indicator::caret_of_thread(thread)
-            {
+            if object == OBJID_CARET {
+                let rect = crate::indicator::caret_of_thread(thread);
                 with_state(|s| {
                     if let Some(indicator) = &mut s.indicator {
-                        indicator.caret_moved(rect);
+                        match rect {
+                            Some(rect) => indicator.caret_moved(rect),
+                            None => indicator.caret_moved_elsewhere(),
+                        }
                     }
                 });
             }

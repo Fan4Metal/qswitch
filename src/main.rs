@@ -12,6 +12,7 @@ mod i18n;
 mod app;
 mod autostart;
 mod caption;
+mod caret;
 mod engine;
 mod hook;
 mod icon;

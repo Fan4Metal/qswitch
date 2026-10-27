@@ -60,7 +60,7 @@ The conversion is done by erasing characters before the caret with Backspace and
 
 ## The badge near the caret
 
-When the layout changes, by the gesture or by Alt+Shift, a small badge with the layout's letters appears under the caret of the window in front and goes after 0.7 s, so the layout is seen where the eyes are, not in the corner of the screen. The Gestures page offers three modes: off, for a moment when the layout changes (the default, with the time it stays), or always, following the caret. The badge takes no focus and lets clicks through. Its place comes from the caret the program in front reports to Windows (editors, browsers, Office, messengers do); a program without a system caret gets the badge beside the mouse pointer instead.
+When the layout changes, by the gesture or by Alt+Shift, a small badge with the layout's letters appears under the caret of the window in front and goes after 0.7 s, so the layout is seen where the eyes are, not in the corner of the screen. The Gestures page offers three modes: off, for a moment when the layout changes (the default, with the time it stays), or always, following the caret. The badge takes no focus and lets clicks through. Its place comes from the caret the program in front reports to Windows (Notepad, Office and most classic programs); for programs that draw their own caret (Chrome, Edge, VS Code and other Electron applications, WPF and Store applications) it is asked through accessibility (UI Automation), which takes a few milliseconds. Only when neither answers does the badge appear beside the mouse pointer.
 
 ## Programs
 

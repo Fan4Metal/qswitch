@@ -4,10 +4,13 @@
 //! takes the focus and lets clicks through, owned by the hook thread, which
 //! learns where the caret is from `EVENT_OBJECT_LOCATIONCHANGE` for
 //! `OBJID_CARET` (`GetGUIThreadInfo` of the event's thread: no call into
-//! the other process). Without a caret (a program that keeps none), the
-//! badge appears beside the mouse pointer.
+//! the other process). A program that keeps no Win32 caret (Chromium and
+//! Electron, WPF, UWP) is asked through accessibility on the caret thread
+//! (`caret.rs`), and the badge waits for its answer a moment; without any,
+//! the badge appears beside the mouse pointer.
 
 use std::cell::RefCell;
+use std::sync::mpsc::Sender;
 
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, SIZE, WPARAM};
 use windows_sys::Win32::Graphics::Gdi::{
@@ -20,10 +23,10 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GUITHREADINFO, GetCursorPos,
-    GetForegroundWindow, GetGUIThreadInfo, HWND_TOPMOST, LWA_ALPHA, RegisterClassW, SW_HIDE,
-    SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes, SetWindowPos, ShowWindow, WM_PAINT,
-    WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
-    WS_POPUP,
+    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, HWND_TOPMOST, LWA_ALPHA,
+    RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
+    SetWindowPos, ShowWindow, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
 use crate::settings::IndicatorMode;
@@ -32,6 +35,9 @@ use crate::settings::IndicatorMode;
 const ALPHA: u8 = 235;
 /// Point size of the letters.
 const POINTS: i32 = 10;
+/// How long the badge waits for the caret thread before it goes beside
+/// the pointer.
+const ASK_MS: u64 = 400;
 
 /// What the window procedure paints with (the window's thread only).
 struct Paint {
@@ -57,6 +63,12 @@ pub struct Indicator {
     visible: bool,
     /// The DPI the font was made for.
     font_dpi: u32,
+    /// The caret thread ([`crate::caret::spawn`]).
+    finder: Option<Sender<u64>>,
+    /// The question to it the badge waits for, and until when.
+    asked: Option<(u64, u64)>,
+    /// Questions asked so far (their numbers).
+    questions: u64,
 }
 
 impl Indicator {
@@ -110,7 +122,15 @@ impl Indicator {
             hide_at: None,
             visible: false,
             font_dpi: 0,
+            finder: None,
+            asked: None,
+            questions: 0,
         })
+    }
+
+    /// The thread that finds a caret that is not a Win32 one.
+    pub fn set_finder(&mut self, finder: Option<Sender<u64>>) {
+        self.finder = finder;
     }
 
     pub fn configure(&mut self, mode: IndicatorMode, duration_ms: u64) {
@@ -154,6 +174,23 @@ impl Indicator {
         }
     }
 
+    /// A caret event with no Win32 caret behind it (Chromium's, once its
+    /// accessibility is on): the caret thread is asked anew when the badge
+    /// follows the caret.
+    pub fn caret_moved_elsewhere(&mut self) {
+        if self.mode == IndicatorMode::Always || self.visible {
+            self.ask();
+        }
+    }
+
+    /// The caret thread's answer to question `id`.
+    pub fn caret_found(&mut self, id: u64, caret: Option<RECT>) {
+        if self.asked.is_some_and(|(asked, _)| asked == id) {
+            self.asked = None;
+            self.show_at(caret);
+        }
+    }
+
     /// Another window is in front: its caret is not known yet.
     pub fn foreground_changed(&mut self) {
         self.caret = None;
@@ -170,11 +207,51 @@ impl Indicator {
             self.hide_at = None;
             self.hide();
         }
+        if let Some((_, until)) = self.asked
+            && now() >= until
+        {
+            // No answer in time: beside the pointer.
+            self.asked = None;
+            self.show_at(None);
+        }
     }
 
-    /// The badge at the caret (or the mouse), sized for the letters and
-    /// the DPI of the window in front, shown without taking the focus.
+    /// The badge at the caret: the Win32 one, known from its events or
+    /// asked of the window in front now, else (once answered) the one the
+    /// caret thread finds.
     fn show(&mut self) {
+        if self.letters.is_empty() {
+            return;
+        }
+        if self.caret.is_none() {
+            self.caret = foreground_caret();
+        }
+        match self.caret {
+            Some(caret) => self.show_at(Some(caret)),
+            None => self.ask(),
+        }
+    }
+
+    /// Ask the caret thread where the caret is; the badge is shown on the
+    /// answer, or beside the pointer when there is no thread.
+    fn ask(&mut self) {
+        let Some(finder) = &self.finder else {
+            self.show_at(None);
+            return;
+        };
+        self.questions += 1;
+        if finder.send(self.questions).is_err() {
+            self.finder = None;
+            self.show_at(None);
+            return;
+        }
+        self.asked = Some((self.questions, now() + ASK_MS));
+    }
+
+    /// The badge at `caret` (else beside the mouse pointer), sized for the
+    /// letters and the DPI of the window in front, shown without taking
+    /// the focus.
+    fn show_at(&mut self, caret: Option<RECT>) {
         if self.letters.is_empty() {
             return;
         }
@@ -226,7 +303,7 @@ impl Indicator {
             let height = size.cy + (4.0 * scale) as i32;
             // Below and right of the caret, else beside the pointer.
             let gap = (4.0 * scale) as i32;
-            let (mut x, mut y, above) = match self.caret {
+            let (mut x, mut y, above) = match caret {
                 Some(c) => (c.left, c.bottom + gap, c.top - gap - height),
                 None => {
                     let mut p = POINT { x: 0, y: 0 };
@@ -276,6 +353,7 @@ impl Indicator {
     }
 
     fn hide(&mut self) {
+        self.asked = None;
         if self.visible {
             unsafe { ShowWindow(self.hwnd as _, SW_HIDE) };
             self.visible = false;
@@ -327,6 +405,15 @@ pub fn caret_of_thread(thread: u32) -> Option<RECT> {
         right: bottom_right.x,
         bottom: bottom_right.y,
     })
+}
+
+/// The Win32 caret of the window in front, if it has one.
+fn foreground_caret() -> Option<RECT> {
+    let foreground = unsafe { GetForegroundWindow() };
+    if foreground.is_null() {
+        return None;
+    }
+    caret_of_thread(unsafe { GetWindowThreadProcessId(foreground, std::ptr::null_mut()) })
 }
 
 fn now() -> u64 {
