@@ -131,6 +131,12 @@ impl App {
                 ThemeSetting::Light => crate::caption::set_dark(hwnd, false),
                 ThemeSetting::System => {}
             }
+            if hidden {
+                // eframe shows the window after its first frame anyway:
+                // cloaked, it is not seen before it is hidden again.
+                crate::caption::cloak(hwnd, true);
+                window::keep_hidden();
+            }
             let ctx = cc.egui_ctx.clone();
             window::hook_window(hwnd, move || ctx.request_repaint());
         }

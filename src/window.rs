@@ -62,6 +62,24 @@ static HOOKED: Mutex<Vec<Hooked>> = Mutex::new(Vec::new());
 static WAKE: OnceLock<Box<dyn Fn() + Send + Sync>> = OnceLock::new();
 /// `TaskbarCreated`, registered by [`hook_window`].
 static EXPLORER_STARTED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// A `--hidden` start: eframe shows the window after its first frame
+/// whatever the builder said (and Windows sets `WS_VISIBLE` even when
+/// `WM_WINDOWPOSCHANGING` drops `SWP_SHOWWINDOW`), so that show is made
+/// without activation on a cloaked window and undone right after.
+/// [`HIDDEN_WAIT`] until that show, [`HIDDEN_UNDO`] until it is undone
+/// (`ShowWindow` activates with a second `SetWindowPos`, refused too).
+static KEEP_HIDDEN: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+const HIDDEN_WAIT: u8 = 1;
+const HIDDEN_UNDO: u8 = 2;
+/// Posted by that first show: hide the window and uncloak it.
+const WM_HIDE_AGAIN: u32 = 0x8000 + 0x52;
+
+/// Keep the window, cloaked by the caller, hidden through eframe's show
+/// after the first frame (before [`hook_window`]).
+pub fn keep_hidden() {
+    KEEP_HIDDEN.store(HIDDEN_WAIT, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Whether the program is paused, for the menu's label.
 static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -192,10 +210,32 @@ unsafe extern "system" fn window_proc(
 ) -> windows_sys::Win32::Foundation::LRESULT {
     use windows_sys::Win32::UI::Shell::DefSubclassProc;
     use windows_sys::Win32::UI::WindowsAndMessaging::{
-        ENDSESSION_CLOSEAPP, SC_CLOSE, WM_CLOSE, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
+        ENDSESSION_CLOSEAPP, PostMessageW, SC_CLOSE, SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW,
+        WINDOWPOS, WM_CLOSE, WM_ENDSESSION, WM_QUERYENDSESSION, WM_SYSCOMMAND,
+        WM_WINDOWPOSCHANGING,
     };
     if msg != 0 && msg == EXPLORER_STARTED.load(std::sync::atomic::Ordering::Relaxed) {
         hook(Hooked::TrayCreated);
+    }
+    let keep_hidden = KEEP_HIDDEN.load(std::sync::atomic::Ordering::Relaxed);
+    if msg == WM_WINDOWPOSCHANGING && keep_hidden != 0 && lparam != 0 {
+        let pos = unsafe { &mut *(lparam as *mut WINDOWPOS) };
+        if keep_hidden == HIDDEN_WAIT && pos.flags & SWP_SHOWWINDOW != 0 {
+            // eframe's first show: hidden again at once.
+            KEEP_HIDDEN.store(HIDDEN_UNDO, std::sync::atomic::Ordering::Relaxed);
+            unsafe { PostMessageW(hwnd, WM_HIDE_AGAIN, 0, 0) };
+        }
+        if KEEP_HIDDEN.load(std::sync::atomic::Ordering::Relaxed) == HIDDEN_UNDO {
+            // Neither the show nor the activation after it takes the
+            // focus from the window in front.
+            pos.flags |= SWP_NOACTIVATE | SWP_NOZORDER;
+        }
+    }
+    if msg == WM_HIDE_AGAIN {
+        hide(hwnd as isize);
+        crate::caption::cloak(hwnd as isize, false);
+        KEEP_HIDDEN.store(0, std::sync::atomic::Ordering::Relaxed);
+        return 0;
     }
     if msg == crate::tray::WM_TRAY {
         const NIN_SELECT: u32 = 0x400;
