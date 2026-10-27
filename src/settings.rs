@@ -131,9 +131,6 @@ pub struct Settings {
     pub tap_ms: u64,
     /// The second tap starts within this of the first one's release.
     pub gap_ms: u64,
-    /// The gesture repeated within this moves on in the cycle (the last
-    /// word, the whole line, back).
-    pub cycle_ms: u64,
     /// The pair of layouts the program converts between, as the hex of
     /// their handles (`layout::id`); empty: the first two installed.
     pub layouts: Vec<String>,
@@ -157,7 +154,6 @@ impl Default for Settings {
             indicator_ms: 700,
             tap_ms: engine.tap_ms,
             gap_ms: engine.gap_ms,
-            cycle_ms: engine.cycle_ms,
             layouts: Vec::new(),
             rules: vec![
                 Rule {
@@ -252,9 +248,6 @@ impl Settings {
         if !(50..=2000).contains(&self.gap_ms) {
             self.gap_ms = d.gap_ms;
         }
-        if !(200..=10_000).contains(&self.cycle_ms) {
-            self.cycle_ms = d.cycle_ms;
-        }
         if !(200..=5000).contains(&self.indicator_ms) {
             self.indicator_ms = d.indicator_ms;
         }
@@ -272,7 +265,6 @@ impl Settings {
             caps_lock_switch: self.caps_lock_switch,
             tap_ms: self.tap_ms,
             gap_ms: self.gap_ms,
-            cycle_ms: self.cycle_ms,
         }
     }
 

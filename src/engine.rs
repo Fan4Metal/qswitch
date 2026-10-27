@@ -8,10 +8,9 @@
 //!
 //! What is on the screen is tracked as a list of [`Typed`] keys, each
 //! knowing which character it gives in either layout of the pair and which
-//! of the two is shown now. The gesture cycles the shown layout: the first
-//! press converts the last word, the next press (soon after) converts the
-//! whole line typed since the last reset, the press after that puts
-//! everything back; typing anything starts the cycle afresh.
+//! of the two is shown now. The gesture flips the last word to the other
+//! layout; repeated, it flips the word back (the keys know what they typed
+//! and what they show, so the gesture is a plain toggle of the last word).
 
 use std::collections::VecDeque;
 
@@ -85,9 +84,6 @@ pub struct Config {
     /// Two taps make the gesture when the second starts within this of
     /// the first's release.
     pub gap_ms: u64,
-    /// A gesture repeated within this of the previous one moves on in
-    /// the cycle (word, line, back); later it starts the cycle again.
-    pub cycle_ms: u64,
 }
 
 impl Default for Config {
@@ -97,7 +93,6 @@ impl Default for Config {
             caps_lock_switch: false,
             tap_ms: 250,
             gap_ms: 350,
-            cycle_ms: 1500,
         }
     }
 }
@@ -169,15 +164,6 @@ impl Typed {
     }
 }
 
-/// Where the gesture's cycle stands.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Stage {
-    /// The last word is converted.
-    Word,
-    /// The whole line is converted.
-    Line,
-}
-
 /// One tap of a modifier that is being watched for the gesture.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Tap {
@@ -200,8 +186,6 @@ pub struct Engine {
     tap: Option<Tap>,
     /// The first of two taps, finished, waiting for the second.
     first_tap_up: Option<(u16, u64)>,
-    /// The cycle's stage and when it was reached.
-    stage: Option<(Stage, u64)>,
 }
 
 impl Default for Engine {
@@ -219,7 +203,6 @@ impl Engine {
             held: Vec::new(),
             tap: None,
             first_tap_up: None,
-            stage: None,
         }
     }
 
@@ -242,7 +225,6 @@ impl Engine {
     /// Forget the line: the caret moved (a click, the focus changed).
     pub fn reset(&mut self) {
         self.line.clear();
-        self.stage = None;
         self.tap = None;
         self.first_tap_up = None;
     }
@@ -268,13 +250,12 @@ impl Engine {
             if key.down && !repeat {
                 verdict.effects.push(Effect::ToggleLayout);
             }
-            self.stage = None;
             return verdict;
         }
         if self.config.trigger == Trigger::Pause && key.vk == vk::PAUSE {
             verdict.swallow = true;
             if key.down && !repeat {
-                self.gesture(key.time, &mut verdict);
+                self.gesture(&mut verdict);
             }
             return verdict;
         }
@@ -371,7 +352,7 @@ impl Engine {
         }
         if self.first_tap_up.take().is_some() {
             // The second tap finished: the gesture.
-            self.gesture(key.time, verdict);
+            self.gesture(verdict);
         } else {
             self.first_tap_up = Some((key.vk, key.time));
         }
@@ -405,7 +386,6 @@ impl Engine {
         if self.ctrl_held() {
             if key.vk == vk::BACK {
                 // Ctrl+Backspace deletes the word before the caret.
-                self.stage = None;
                 while self.line.back().is_some_and(Typed::is_space) {
                     self.line.pop_back();
                 }
@@ -419,7 +399,6 @@ impl Engine {
         }
         match key.vk {
             vk::BACK => {
-                self.stage = None;
                 self.line.pop_back();
                 return;
             }
@@ -450,7 +429,6 @@ impl Engine {
             self.reset();
             return;
         }
-        self.stage = None;
         if self.line.len() >= MAX_LINE {
             self.line.pop_front();
         }
@@ -461,12 +439,9 @@ impl Engine {
         });
     }
 
-    /// The gesture: convert the last word, then the line, then put it back.
-    fn gesture(&mut self, now: u64, verdict: &mut Verdict) {
-        let stage = self
-            .stage
-            .filter(|&(_, at)| now.saturating_sub(at) <= self.config.cycle_ms)
-            .map(|(s, _)| s);
+    /// The gesture: flip the last word to the other layout; a word flipped
+    /// already goes back as typed.
+    fn gesture(&mut self, verdict: &mut Verdict) {
         // The last word: the non-space keys before the trailing spaces.
         let trailing = self.line.iter().rev().take_while(|t| t.is_space()).count();
         let word_len = self
@@ -476,47 +451,21 @@ impl Engine {
             .skip(trailing)
             .take_while(|t| !t.is_space())
             .count();
-        // Keys of earlier words of the line.
-        let earlier = self.line.iter().filter(|t| !t.is_space()).count() - word_len;
-        let next = match stage {
-            None if word_len == 0 => {
-                // Nothing typed: the selection, or the layout alone.
-                verdict.effects.push(Effect::ConvertSelection);
-                return;
-            }
-            None => Stage::Word,
-            Some(Stage::Word) if earlier > 0 => Stage::Line,
-            Some(_) => {
-                self.restore(verdict);
-                self.stage = None;
-                return;
-            }
-        };
+        if word_len == 0 {
+            // Nothing typed: the selection, or the layout alone.
+            verdict.effects.push(Effect::ConvertSelection);
+            return;
+        }
         let from = self.screen();
-        let start = match next {
-            Stage::Word => self.line.len() - trailing - word_len,
-            Stage::Line => 0,
-        };
+        let start = self.line.len() - trailing - word_len;
+        // The word is shown in one layout throughout (typed in one, flipped
+        // as a whole), so the last key says where it stands.
+        let to = 1 - self.line[start + word_len - 1].shown;
         for t in self.line.iter_mut().skip(start) {
-            t.shown = 1 - t.typed;
+            t.shown = to;
         }
         self.emit_difference(&from, verdict);
-        if let Some(last) = self.line.iter().rev().find(|t| !t.is_space()) {
-            verdict.effects.push(Effect::SwitchLayout(last.shown));
-        }
-        self.stage = Some((next, now));
-    }
-
-    /// Everything back as typed, and the layout back too.
-    fn restore(&mut self, verdict: &mut Verdict) {
-        let from = self.screen();
-        for t in self.line.iter_mut() {
-            t.shown = t.typed;
-        }
-        self.emit_difference(&from, verdict);
-        if let Some(last) = self.line.iter().rev().find(|t| !t.is_space()) {
-            verdict.effects.push(Effect::SwitchLayout(last.typed));
-        }
+        verdict.effects.push(Effect::SwitchLayout(to));
     }
 
     /// Replace what differs between `from` and the screen now: the common
@@ -680,19 +629,36 @@ mod tests {
     }
 
     #[test]
-    fn the_cycle_goes_word_line_back() {
+    fn the_gesture_repeated_puts_the_word_back_and_leaves_the_rest() {
         let mut t = Typer::new(Config::default());
         t.type_text("ghbdtn rfr ltkf");
         t.double_shift();
         let effects = t.double_shift();
-        assert_eq!(replace(&effects), Some((15, "привет как дела".to_owned())));
-        assert_eq!(t.engine.screen(), "привет как дела");
-        let effects = t.double_shift();
-        assert_eq!(replace(&effects), Some((15, "ghbdtn rfr ltkf".to_owned())));
+        assert_eq!(replace(&effects), Some((4, "ltkf".to_owned())));
         assert!(effects.contains(&Effect::SwitchLayout(0)));
-        // The cycle starts again.
+        assert_eq!(t.engine.screen(), "ghbdtn rfr ltkf");
+        // And forth again.
         let effects = t.double_shift();
         assert_eq!(replace(&effects), Some((4, "дела".to_owned())));
+        assert!(effects.contains(&Effect::SwitchLayout(1)));
+    }
+
+    #[test]
+    fn a_word_typed_on_after_the_gesture_flips_as_a_whole() {
+        let mut t = Typer::new(Config::default());
+        t.type_text("ghb");
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "при");
+        // The layout is now 1: the rest of the word is typed there.
+        t.layout = 1;
+        t.type_text("мун");
+        assert_eq!(t.engine.screen(), "примун");
+        let effects = t.double_shift();
+        assert_eq!(replace(&effects), Some((6, "ghbvey".to_owned())));
+        assert!(effects.contains(&Effect::SwitchLayout(0)));
+        t.layout = 0;
+        let effects = t.double_shift();
+        assert_eq!(replace(&effects), Some((6, "примун".to_owned())));
     }
 
     #[test]
@@ -702,21 +668,19 @@ mod tests {
         t.double_shift();
         let effects = t.double_shift();
         assert_eq!(replace(&effects), Some((6, "ghbdtn".to_owned())));
-        assert_eq!(t.engine.stage, None);
+        assert!(effects.contains(&Effect::SwitchLayout(0)));
     }
 
     #[test]
-    fn a_late_repeat_starts_the_cycle_again() {
+    fn a_late_repeat_puts_the_word_back_too() {
         let mut t = Typer::new(Config::default());
         t.type_text("ghbdtn rfr");
         t.double_shift();
-        t.wait(2000);
-        // Stage expired: the last word (already converted) is converted
-        // back, as a fresh "convert the last word" sees it typed in 0 and
-        // shown in 1, and flips it to... the other of typed: 1 again.
-        let effects = t.double_shift();
-        assert_eq!(replace(&effects), None);
         assert_eq!(t.engine.screen(), "ghbdtn как");
+        t.wait(10_000);
+        let effects = t.double_shift();
+        assert_eq!(replace(&effects), Some((3, "rfr".to_owned())));
+        assert_eq!(t.engine.screen(), "ghbdtn rfr");
     }
 
     #[test]

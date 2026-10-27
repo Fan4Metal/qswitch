@@ -178,11 +178,9 @@ pub fn gestures(app: &mut App, ui: &mut Ui) {
     ui.add_space(6.0);
     ui.label(tr!(
         "The gesture converts the last word into the other layout and switches to it. \
-         Repeated at once, it converts the whole line typed since the caret last moved; \
-         once more, it puts everything back.",
+         Repeated, it puts the word back, and the layout too.",
         "Жест переводит последнее слово в другую раскладку и переключает её. \
-         Повторённый сразу, переводит всю строку, набранную с последнего перемещения курсора; \
-         ещё раз — возвращает всё как было."
+         Повторённый, возвращает слово как было, и раскладку тоже."
     ));
     ui.add_space(12.0);
     ui.strong(tr!("Switching", "Переключение"));
@@ -261,15 +259,6 @@ pub fn gestures(app: &mut App, ui: &mut Ui) {
                 ));
                 ui.add(
                     egui::Slider::new(&mut app.settings.gap_ms, 50..=1000)
-                        .suffix(tr!(" ms", " мс")),
-                );
-                ui.end_row();
-                ui.label(tr!(
-                    "A repeat continues the cycle within",
-                    "Повтор продолжает цикл в течение"
-                ));
-                ui.add(
-                    egui::Slider::new(&mut app.settings.cycle_ms, 200..=5000)
                         .suffix(tr!(" ms", " мс")),
                 );
                 ui.end_row();

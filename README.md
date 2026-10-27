@@ -23,7 +23,7 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 
 ## Features
 
-- **Two taps of Shift**: the last word is converted into the other layout and the layout is switched (see [The gesture](#the-gesture)). The same gesture repeated converts the whole line, and once more puts everything back.
+- **Two taps of Shift**: the last word is converted into the other layout and the layout is switched (see [The gesture](#the-gesture)). The same gesture repeated puts the word back, and the layout too.
 - **Selected text**: with nothing typed, the gesture converts the selection instead, in any program that exposes its text to UI Automation (editors, browsers, Office, messengers).
 - **Caps Lock as the layout switch**: optional; Shift+Caps Lock stays the real Caps Lock.
 - **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, grey while paused.
@@ -52,8 +52,7 @@ The program watches the keys typed since the caret last moved (a click, an arrow
 | Press | Effect |
 |---|---|
 | The first | The last word is erased and typed again as the same keys read in the other layout; the window is switched to that layout. |
-| The second, within 1.5 s | The whole line typed since the caret last moved is converted the same way. |
-| The third | Everything is put back as it was typed, and the layout too. |
+| The second | The word is put back as it was typed, and the layout too. Each further repeat flips it again. |
 
 With nothing typed yet, the gesture converts the selected text, if there is one: the selection is read through UI Automation, converted character by character (each goes to the other layout of the pair) and typed over the selection, and the window is switched to the layout of the result. With no selection either, the gesture only switches the layout. Programs that do not expose their text (and terminals, where typing does not replace a selection) get the layout switch alone. Instead of two taps of Shift, the Gestures page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher).
 
@@ -82,7 +81,7 @@ A click on the icon opens the window; its menu has **Show**, **Pause** (every ke
 
 | Key | Action |
 |---|---|
-| `Shift` `Shift` | Convert the last word, the line, back; with nothing typed, the selected text (the default gesture, see above) |
+| `Shift` `Shift` | Convert the last word, or put it back; with nothing typed, the selected text (the default gesture, see above) |
 | `F1` | About |
 
 ## Update check and privacy
