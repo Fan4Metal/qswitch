@@ -3,7 +3,10 @@
 //! the caret object of the focus window through MSAA (`OBJID_CARET`,
 //! which Chromium exposes once accessibility is on), else UI Automation:
 //! the caret range of the focused element (`TextPattern2`), else the end
-//! of its selection (`TextPattern`).
+//! of its selection (`TextPattern`). Asked for a caret just placed
+//! (`strict`), only an element that takes text counts (an edit control, or
+//! a value that is not read-only), so a click on a page or a list shows
+//! nothing.
 //!
 //! These calls cross into the other process and may take a while, so they
 //! run on a thread of their own ([`spawn`]), never on the hook thread,
@@ -21,22 +24,23 @@ use windows_sys::Win32::Foundation::RECT;
 /// How long a call into the other program may take.
 const TIMEOUT_MS: u32 = 300;
 
-/// Start the thread that answers where the caret is: each number sent is
-/// answered with `answer(number, place)` (only the latest of several sent
-/// at once). UI Automation is made at the first question, so a badge
+/// Start the thread that answers where the caret is: each question sent
+/// (a number, and whether it is `strict`) is answered with
+/// `answer(number, place)` (only the latest of several sent at once). UI Automation is made at the first question, so a badge
 /// that is off costs nothing. `None` when the thread could not be started.
-pub fn spawn(answer: impl Fn(u64, Option<RECT>) + Send + 'static) -> Option<Sender<u64>> {
-    let (requests, received) = channel::<u64>();
+pub fn spawn(answer: impl Fn(u64, Option<RECT>) + Send + 'static) -> Option<Sender<(u64, bool)>> {
+    let (requests, received) = channel::<(u64, bool)>();
     std::thread::Builder::new()
         .name("caret".into())
         .spawn(move || {
             let mut finder = None;
-            while let Ok(mut id) = received.recv() {
+            while let Ok(mut question) = received.recv() {
                 while let Ok(later) = received.try_recv() {
-                    id = later;
+                    question = later;
                 }
+                let (id, strict) = question;
                 let finder = finder.get_or_insert_with(Finder::new);
-                answer(id, finder.as_ref().and_then(Finder::caret));
+                answer(id, finder.as_ref().and_then(|f| f.caret(strict)));
             }
         })
         .ok()?;
@@ -66,12 +70,13 @@ impl Finder {
     }
 
     /// The caret of the window in front, in screen pixels: a rectangle
-    /// one pixel wide, as tall as the line.
-    pub fn caret(&self) -> Option<RECT> {
-        msaa_caret().or_else(|| self.uia_caret())
+    /// one pixel wide, as tall as the line. `strict`: only in an element
+    /// that takes text.
+    pub fn caret(&self, strict: bool) -> Option<RECT> {
+        msaa_caret().or_else(|| self.uia_caret(strict))
     }
 
-    fn uia_caret(&self) -> Option<RECT> {
+    pub fn uia_caret(&self, strict: bool) -> Option<RECT> {
         use windows::Win32::UI::Accessibility::{
             IUIAutomationTextPattern, IUIAutomationTextPattern2, UIA_TextPattern2Id,
             UIA_TextPatternId,
@@ -80,6 +85,9 @@ impl Finder {
         // SAFETY: every interface comes from a successful call.
         unsafe {
             let element = self.automation.GetFocusedElement().ok()?;
+            if strict && !takes_text(&element) {
+                return None;
+            }
             if let Ok(pattern) = element.GetCurrentPattern(UIA_TextPattern2Id)
                 && let Ok(pattern) = pattern.cast::<IUIAutomationTextPattern2>()
             {
@@ -104,8 +112,32 @@ impl Finder {
     }
 }
 
-/// The caret object of the focus window (`OBJID_CARET`), as MSAA has it.
-fn msaa_caret() -> Option<RECT> {
+/// Whether `element` takes text: its value is not read-only, or (with no
+/// value) it is an edit control.
+fn takes_text(element: &windows::Win32::UI::Accessibility::IUIAutomationElement) -> bool {
+    use windows::Win32::UI::Accessibility::{
+        IUIAutomationValuePattern, UIA_EditControlTypeId, UIA_ValuePatternId,
+    };
+    use windows::core::Interface;
+    // SAFETY: every interface comes from a successful call.
+    unsafe {
+        let read_only = element
+            .GetCurrentPattern(UIA_ValuePatternId)
+            .ok()
+            .and_then(|p| p.cast::<IUIAutomationValuePattern>().ok())
+            .and_then(|p| p.CurrentIsReadOnly().ok());
+        match read_only {
+            Some(read_only) => !read_only.as_bool(),
+            None => element
+                .CurrentControlType()
+                .is_ok_and(|t| t == UIA_EditControlTypeId),
+        }
+    }
+}
+
+/// The caret object of the focus window (`OBJID_CARET`), as MSAA has it;
+/// not when it says it is invisible.
+pub fn msaa_caret() -> Option<RECT> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::System::Variant::VARIANT;
     use windows::Win32::UI::Accessibility::{AccessibleObjectFromWindow, IAccessible};
@@ -140,6 +172,15 @@ fn msaa_caret() -> Option<RECT> {
             return None;
         }
         let caret = IAccessible::from_raw(object);
+        const STATE_SYSTEM_INVISIBLE: i32 = 0x8000;
+        let state = caret
+            .get_accState(&VARIANT::from(0i32))
+            .ok()
+            .and_then(|s| i32::try_from(&s).ok())
+            .unwrap_or(0);
+        if state & STATE_SYSTEM_INVISIBLE != 0 {
+            return None;
+        }
         let (mut x, mut y, mut w, mut h) = (0, 0, 0, 0);
         caret
             .accLocation(&mut x, &mut y, &mut w, &mut h, &VARIANT::from(0i32))

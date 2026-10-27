@@ -71,6 +71,7 @@ pub struct Setup {
     pub layouts: Vec<(Hkl, String)>,
     pub indicator: crate::settings::IndicatorMode,
     pub indicator_ms: u64,
+    pub indicator_on_caret: bool,
 }
 
 /// Marks the thread's own injected input (`dwExtraInfo`), which the hook
@@ -215,6 +216,7 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             layouts: Vec::new(),
             indicator: Default::default(),
             indicator_ms: 700,
+            indicator_on_caret: true,
         });
     let mut state = State {
         engine: Engine::new(setup.config.clone()),
@@ -294,6 +296,13 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
     let mut msg: MSG = unsafe { std::mem::zeroed() };
     while unsafe { GetMessageW(&mut msg, std::ptr::null_mut(), 0, 0) } > 0 {
         match msg.message {
+            WM_TIMER if msg.wParam == crate::indicator::PLACED_TIMER && !msg.hwnd.is_null() => {
+                with_state(|s| {
+                    if let Some(indicator) = &mut s.indicator {
+                        indicator.placed_due();
+                    }
+                });
+            }
             WM_TIMER => {
                 with_state(|s| {
                     s.poll_layout();
@@ -375,7 +384,11 @@ impl State {
         self.rules = setup.rules;
         self.layouts = setup.layouts;
         if let Some(indicator) = &mut self.indicator {
-            indicator.configure(setup.indicator, setup.indicator_ms);
+            indicator.configure(
+                setup.indicator,
+                setup.indicator_ms,
+                setup.indicator_on_caret,
+            );
         }
         self.engine.set_config(setup.config);
         self.mode = rule_for(&self.rules, &self.exe);
@@ -623,6 +636,7 @@ impl State {
         self.engine.reset();
         if let Some(indicator) = &mut self.indicator {
             indicator.foreground_changed();
+            indicator.caret_placed(false);
         }
         let exe = process_name(hwnd).unwrap_or_default();
         if tracing() {
@@ -843,7 +857,14 @@ unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) 
         )
     {
         // The caret may be anywhere now.
-        with_state(|s| s.engine.reset());
+        with_state(|s| {
+            s.engine.reset();
+            if wparam as u32 == WM_LBUTTONDOWN
+                && let Some(indicator) = &mut s.indicator
+            {
+                indicator.caret_placed(true);
+            }
+        });
     }
     unsafe { CallNextHookEx(std::ptr::null_mut(), code, wparam, lparam) }
 }
@@ -881,6 +902,9 @@ unsafe extern "system" fn win_event_proc(
                 }
                 s.engine.reset();
                 s.poll_layout();
+                if let Some(indicator) = &mut s.indicator {
+                    indicator.caret_placed(false);
+                }
             });
         }
         _ => {}

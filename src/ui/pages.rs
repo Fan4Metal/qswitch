@@ -231,6 +231,15 @@ pub fn gestures(app: &mut App, ui: &mut Ui) {
                         .suffix(tr!(" ms", " мс")),
                 );
                 ui.end_row();
+                ui.label("");
+                ui.checkbox(
+                    &mut app.settings.indicator_on_caret,
+                    tr!(
+                        "Also when the caret is placed (a click, another field or window)",
+                        "Также при установке курсора (щелчок, другое поле или окно)"
+                    ),
+                );
+                ui.end_row();
             }
         });
     ui.add_space(12.0);

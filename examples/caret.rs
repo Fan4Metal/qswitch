@@ -21,6 +21,7 @@ fn main() {
     // Per-monitor aware, as the program: screen pixels.
     unsafe { SetProcessDpiAwarenessContext(-4) };
     let finder = caret::Finder::new().expect("UI Automation");
+    focused();
     let rounds: u32 = std::env::args()
         .nth(1)
         .and_then(|n| n.parse().ok())
@@ -36,15 +37,45 @@ fn main() {
             info.cbSize = size_of::<GUITHREADINFO>() as u32;
             GetGUIThreadInfo(thread, &mut info);
             let start = std::time::Instant::now();
-            let found = finder.caret();
+            let found = finder.caret(false);
+            let took = start.elapsed();
+            let strict = finder.caret(true);
+            let msaa = caret::msaa_caret();
+            let uia = finder.uia_caret(false);
             println!(
-                "{class}: win32 caret {:?} {:?} | found {:?} in {:?}",
+                "  msaa {:?} uia {:?}",
+                msaa.map(|r| (r.left, r.top, r.bottom)),
+                uia.map(|r| (r.left, r.top, r.bottom))
+            );
+            println!(
+                "{class}: win32 caret {:?} {:?} | found {:?} in {:?} | strict {:?}",
                 info.hwndCaret,
                 (info.rcCaret.left, info.rcCaret.top, info.rcCaret.bottom),
                 found.map(|r| (r.left, r.top, r.bottom)),
-                start.elapsed()
+                took,
+                strict.map(|r| (r.left, r.top, r.bottom)),
             );
         }
         std::thread::sleep(std::time::Duration::from_secs(1));
+    }
+}
+
+/// The focused element: its control type, name, and the caret object's
+/// raw MSAA state and place.
+fn focused() {
+    use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
+    use windows::Win32::UI::Accessibility::{CUIAutomation8, IUIAutomation};
+    unsafe {
+        let automation: IUIAutomation =
+            CoCreateInstance(&CUIAutomation8, None, CLSCTX_INPROC_SERVER).unwrap();
+        match automation.GetFocusedElement() {
+            Ok(e) => println!(
+                "focused: type {:?} name {:?} class {:?}",
+                e.CurrentControlType().map(|t| t.0),
+                e.CurrentName().map(|n| n.to_string()),
+                e.CurrentClassName().map(|n| n.to_string())
+            ),
+            Err(err) => println!("focused: {err}"),
+        }
     }
 }

@@ -130,6 +130,9 @@ pub struct Settings {
     pub indicator: IndicatorMode,
     /// How long the badge stays when shown for a moment, milliseconds.
     pub indicator_ms: u64,
+    /// Shown for a moment also when the caret is placed (a click, another
+    /// field or window), in the `on_switch` mode.
+    pub indicator_on_caret: bool,
     /// A tap of the gesture's key: held at most this long, milliseconds.
     pub tap_ms: u64,
     /// The second tap starts within this of the first one's release.
@@ -156,6 +159,7 @@ impl Default for Settings {
             caps_lock_switch: engine.caps_lock_switch,
             indicator: IndicatorMode::OnSwitch,
             indicator_ms: 700,
+            indicator_on_caret: true,
             tap_ms: engine.tap_ms,
             gap_ms: engine.gap_ms,
             layouts: Vec::new(),
@@ -344,6 +348,7 @@ mod tests {
         assert_eq!(settings.trigger, Trigger::Pause);
         assert!(settings.close_to_tray);
         assert!(settings.keep_conversions);
+        assert!(settings.indicator_on_caret);
         assert_eq!(settings.rule_for(r"C:\Games\game.exe"), Some(RuleMode::Off));
         assert_eq!(settings.rule_for("other.exe"), None);
     }

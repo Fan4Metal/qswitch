@@ -7,7 +7,10 @@
 //! the other process). A program that keeps no Win32 caret (Chromium and
 //! Electron, WPF, UWP) is asked through accessibility on the caret thread
 //! (`caret.rs`), and the badge waits for its answer a moment; without any,
-//! the badge appears beside the mouse pointer.
+//! the badge appears beside the mouse pointer. With `on_caret`, the
+//! badge is shown for a moment also when the caret is placed (a left click,
+//! the focus moved, another window in front), at the caret only: no caret
+//! found then, no badge.
 
 use std::cell::RefCell;
 use std::sync::mpsc::Sender;
@@ -23,9 +26,9 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CreateWindowExW, DefWindowProcW, DestroyWindow, GUITHREADINFO, GetCursorPos,
-    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, HWND_TOPMOST, LWA_ALPHA,
-    RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
-    SetWindowPos, ShowWindow, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    GetForegroundWindow, GetGUIThreadInfo, GetWindowThreadProcessId, HWND_TOPMOST, KillTimer,
+    LWA_ALPHA, RegisterClassW, SW_HIDE, SWP_NOACTIVATE, SWP_SHOWWINDOW, SetLayeredWindowAttributes,
+    SetTimer, SetWindowPos, ShowWindow, WM_PAINT, WNDCLASSW, WS_EX_LAYERED, WS_EX_NOACTIVATE,
     WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT, WS_POPUP,
 };
 
@@ -38,6 +41,31 @@ const POINTS: i32 = 10;
 /// How long the badge waits for the caret thread before it goes beside
 /// the pointer.
 const ASK_MS: u64 = 400;
+/// The timer (of the badge's window) that looks for the caret after it was
+/// placed; the hook thread's loop calls [`Indicator::placed_due`] on it.
+pub const PLACED_TIMER: usize = 1;
+/// How long after a click or a focus change the caret is looked for: the
+/// program places it first.
+const PLACED_MS: u32 = 60;
+
+/// A question to the caret thread the badge waits for.
+#[derive(Clone, Copy)]
+struct Asked {
+    id: u64,
+    /// When to stop waiting.
+    until: u64,
+    /// For a caret just placed: no answer, no badge (not beside the
+    /// pointer).
+    placed: bool,
+}
+
+/// A caret placed, to be looked for when [`PLACED_TIMER`] fires.
+#[derive(Clone, Copy)]
+struct Placed {
+    /// By a click: the caret before it, shown only if it moved.
+    click: bool,
+    before: Option<RECT>,
+}
 
 /// What the window procedure paints with (the window's thread only).
 struct Paint {
@@ -64,9 +92,13 @@ pub struct Indicator {
     /// The DPI the font was made for.
     font_dpi: u32,
     /// The caret thread ([`crate::caret::spawn`]).
-    finder: Option<Sender<u64>>,
-    /// The question to it the badge waits for, and until when.
-    asked: Option<(u64, u64)>,
+    finder: Option<Sender<(u64, bool)>>,
+    /// The question to it the badge waits for.
+    asked: Option<Asked>,
+    /// Shown for a moment when the caret is placed (`OnSwitch` mode).
+    on_caret: bool,
+    /// A caret placed, looked for when [`PLACED_TIMER`] fires.
+    placed: Option<Placed>,
     /// Questions asked so far (their numbers).
     questions: u64,
 }
@@ -124,18 +156,21 @@ impl Indicator {
             font_dpi: 0,
             finder: None,
             asked: None,
+            on_caret: true,
+            placed: None,
             questions: 0,
         })
     }
 
     /// The thread that finds a caret that is not a Win32 one.
-    pub fn set_finder(&mut self, finder: Option<Sender<u64>>) {
+    pub fn set_finder(&mut self, finder: Option<Sender<(u64, bool)>>) {
         self.finder = finder;
     }
 
-    pub fn configure(&mut self, mode: IndicatorMode, duration_ms: u64) {
+    pub fn configure(&mut self, mode: IndicatorMode, duration_ms: u64, on_caret: bool) {
         self.mode = mode;
         self.duration_ms = duration_ms;
+        self.on_caret = on_caret;
         if mode != IndicatorMode::Always {
             self.hide();
         }
@@ -162,12 +197,7 @@ impl Indicator {
 
     /// The caret of the window in front moved to `rect` (screen pixels).
     pub fn caret_moved(&mut self, rect: RECT) {
-        let moved = !self.caret.is_some_and(|c| {
-            c.left == rect.left
-                && c.top == rect.top
-                && c.right == rect.right
-                && c.bottom == rect.bottom
-        });
+        let moved = !self.caret.is_some_and(|c| same(c, rect));
         self.caret = Some(rect);
         if moved && (self.mode == IndicatorMode::Always || self.visible) {
             self.show();
@@ -179,16 +209,69 @@ impl Indicator {
     /// follows the caret.
     pub fn caret_moved_elsewhere(&mut self) {
         if self.mode == IndicatorMode::Always || self.visible {
-            self.ask();
+            self.ask(false);
         }
     }
 
     /// The caret thread's answer to question `id`.
     pub fn caret_found(&mut self, id: u64, caret: Option<RECT>) {
-        if self.asked.is_some_and(|(asked, _)| asked == id) {
-            self.asked = None;
+        let Some(asked) = self.asked.filter(|a| a.id == id) else {
+            return;
+        };
+        self.asked = None;
+        if asked.placed {
+            if let Some(caret) = caret {
+                self.flash_at(caret);
+            }
+        } else {
             self.show_at(caret);
         }
+    }
+
+    /// The caret may have been placed: a left click (`click`), the focus
+    /// moved, another window in front. It is looked for a moment later
+    /// ([`PLACED_TIMER`]), and the badge flashes there.
+    pub fn caret_placed(&mut self, click: bool) {
+        if self.mode != IndicatorMode::OnSwitch || !self.on_caret || self.letters.is_empty() {
+            return;
+        }
+        let placed = match self.placed {
+            // A click followed by a focus change: the caret is new.
+            Some(p) => Placed {
+                click: p.click && click,
+                before: p.before,
+            },
+            None => Placed {
+                click,
+                before: if click { foreground_caret() } else { None },
+            },
+        };
+        self.placed = Some(placed);
+        unsafe { SetTimer(self.hwnd as _, PLACED_TIMER, PLACED_MS, None) };
+    }
+
+    /// [`PLACED_TIMER`] fired: the badge flashes at the caret placed, if
+    /// there is one (a Win32 caret that moved, or one the caret thread
+    /// finds).
+    pub fn placed_due(&mut self) {
+        unsafe { KillTimer(self.hwnd as _, PLACED_TIMER) };
+        let Some(placed) = self.placed.take() else {
+            return;
+        };
+        match foreground_caret() {
+            Some(caret) if placed.click && placed.before.is_some_and(|b| same(b, caret)) => {}
+            Some(caret) => {
+                self.caret = Some(caret);
+                self.flash_at(caret);
+            }
+            None => self.ask(true),
+        }
+    }
+
+    /// The badge at `caret` for a moment.
+    fn flash_at(&mut self, caret: RECT) {
+        self.hide_at = Some(now() + self.duration_ms);
+        self.show_at(Some(caret));
     }
 
     /// Another window is in front: its caret is not known yet.
@@ -207,12 +290,15 @@ impl Indicator {
             self.hide_at = None;
             self.hide();
         }
-        if let Some((_, until)) = self.asked
-            && now() >= until
+        if let Some(asked) = self.asked
+            && now() >= asked.until
         {
-            // No answer in time: beside the pointer.
+            // No answer in time: beside the pointer (for a caret just
+            // placed, nothing).
             self.asked = None;
-            self.show_at(None);
+            if !asked.placed {
+                self.show_at(None);
+            }
         }
     }
 
@@ -228,24 +314,30 @@ impl Indicator {
         }
         match self.caret {
             Some(caret) => self.show_at(Some(caret)),
-            None => self.ask(),
+            None => self.ask(false),
         }
     }
 
     /// Ask the caret thread where the caret is; the badge is shown on the
-    /// answer, or beside the pointer when there is no thread.
-    fn ask(&mut self) {
-        let Some(finder) = &self.finder else {
-            self.show_at(None);
-            return;
-        };
-        self.questions += 1;
-        if finder.send(self.questions).is_err() {
-            self.finder = None;
-            self.show_at(None);
+    /// answer, or beside the pointer when there is no thread (for a caret
+    /// just placed, `placed`, only at a caret found).
+    fn ask(&mut self, placed: bool) {
+        let sent = self.finder.as_ref().map(|f| {
+            self.questions += 1;
+            f.send((self.questions, placed)).is_ok()
+        });
+        if sent == Some(true) {
+            self.asked = Some(Asked {
+                id: self.questions,
+                until: now() + ASK_MS,
+                placed,
+            });
             return;
         }
-        self.asked = Some((self.questions, now() + ASK_MS));
+        self.finder = None;
+        if !placed {
+            self.show_at(None);
+        }
     }
 
     /// The badge at `caret` (else beside the mouse pointer), sized for the
@@ -405,6 +497,10 @@ pub fn caret_of_thread(thread: u32) -> Option<RECT> {
         right: bottom_right.x,
         bottom: bottom_right.y,
     })
+}
+
+fn same(a: RECT, b: RECT) -> bool {
+    a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
 }
 
 /// The Win32 caret of the window in front, if it has one.
