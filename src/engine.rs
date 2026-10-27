@@ -222,6 +222,15 @@ impl Engine {
         }
     }
 
+    /// Forget the keys noted as held that are up now (`down` says which
+    /// are down): their release went where the hook does not see it (the
+    /// lock screen after Win+L, Ctrl+Alt+Del, an elevated window), and a
+    /// key left held would keep every Shift from being a tap alone, and
+    /// every letter a shortcut, until it is pressed again.
+    pub fn forget_released(&mut self, down: impl Fn(u16) -> bool) {
+        self.held.retain(|&v| down(v));
+    }
+
     /// Forget the line: the caret moved (a click, the focus changed).
     pub fn reset(&mut self) {
         self.line.clear();
@@ -710,6 +719,28 @@ mod tests {
         let effects = t.double_shift();
         assert_eq!(replace(&effects), Some((6, "printf".to_owned())));
         assert!(effects.contains(&Effect::SwitchLayout(0)));
+    }
+
+    #[test]
+    fn a_key_whose_release_was_missed_is_forgotten() {
+        let mut t = Typer::new(Config::default());
+        // Win+L: the lock screen takes the releases.
+        for vk in [0x5B, 0x14C] {
+            t.engine.key(Key {
+                vk,
+                down: true,
+                time: t.time,
+                chars: [None, None],
+                layout: Some(0),
+            });
+        }
+        t.wait(5000);
+        t.type_text("ghbdtn");
+        assert!(replace(&t.double_shift()).is_none());
+        // The keyboard says nothing is down: the gesture works again.
+        t.engine.forget_released(|_| false);
+        t.type_text("ghbdtn");
+        assert_eq!(replace(&t.double_shift()), Some((6, "привет".to_string())));
     }
 
     #[test]

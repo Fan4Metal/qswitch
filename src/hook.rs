@@ -24,8 +24,8 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use windows_sys::Win32::Foundation::{HWND, LPARAM, LRESULT, WPARAM};
 use windows_sys::Win32::UI::Accessibility::{HWINEVENTHOOK, SetWinEventHook, UnhookWinEvent};
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
-    GetKeyState, INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, SendInput, VK_BACK,
-    VK_CAPITAL, VK_LSHIFT, VK_RSHIFT, VK_SHIFT,
+    GetAsyncKeyState, GetKeyState, INPUT, INPUT_KEYBOARD, KEYEVENTF_KEYUP, KEYEVENTF_UNICODE,
+    SendInput, VK_BACK, VK_CAPITAL, VK_LSHIFT, VK_PAUSE, VK_RSHIFT, VK_SHIFT,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, DispatchMessageW, EVENT_OBJECT_FOCUS, EVENT_OBJECT_LOCATIONCHANGE,
@@ -373,8 +373,19 @@ impl State {
     /// A key from the hook; whether to swallow it. `injected`: by some
     /// other program's `SendInput` (the program's own keys never get here).
     fn on_key(&mut self, vk: u16, down: bool, time: u64, injected: bool) -> bool {
+        let is_down = |v: u16| unsafe { GetAsyncKeyState(i32::from(v)) } < 0;
         if vk == VK_SHIFT || vk == VK_LSHIFT || vk == VK_RSHIFT {
             self.shift = down;
+        } else if down {
+            self.shift = is_down(VK_SHIFT);
+        }
+        if down {
+            // A release the hook missed (Win+L, Ctrl+Alt+Del, an elevated
+            // window) is caught up with by the keyboard's own state. The
+            // key going down now is not in it yet, and the keys the
+            // engine may swallow never are.
+            self.engine
+                .forget_released(|v| v == vk || v == VK_CAPITAL || v == VK_PAUSE || is_down(v));
         }
         if paused() {
             return false;
