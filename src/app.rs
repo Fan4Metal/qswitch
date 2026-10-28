@@ -413,6 +413,9 @@ impl App {
     fn follow_tray(&mut self) {
         let supported = langs_of(self.pair).iter().all(Option::is_some);
         window::set_auto(supported.then_some(self.settings.auto_switch));
+        let auto = supported && self.settings.auto_switch;
+        let tracing = self.tracing();
+        let kept = self.settings.keep_conversions;
         let Some(tray) = &mut self.tray else { return };
         let paused = hook::paused();
         let layout = self
@@ -427,16 +430,39 @@ impl App {
             (Some(l), false) => format!("{} — {}", crate::APP_NAME, l.name),
             (None, false) => crate::APP_NAME.to_owned(),
         };
-        let auto = supported && self.settings.auto_switch;
-        let tip = if auto && !paused {
-            tr!(
-                format!("{tip}, automatic switching"),
-                format!("{tip}, автопереключение")
-            )
+        // The look: paused above all, then the warning (as the toolbar's
+        // red), then the automatic switch.
+        let look = if paused {
+            crate::tray::Look::Paused
+        } else if tracing || kept {
+            crate::tray::Look::Warning
+        } else if auto {
+            crate::tray::Look::Auto
         } else {
-            tip
+            crate::tray::Look::Plain
         };
-        tray.set(letters, paused, auto, &tip);
+        let mut tip = tip;
+        if !paused {
+            if tracing {
+                tip = tr!(
+                    format!("{tip}, every key is written to a file"),
+                    format!("{tip}, все клавиши пишутся в файл")
+                );
+            }
+            if kept {
+                tip = tr!(
+                    format!("{tip}, conversions are kept"),
+                    format!("{tip}, преобразования хранятся")
+                );
+            }
+            if auto {
+                tip = tr!(
+                    format!("{tip}, automatic switching"),
+                    format!("{tip}, автопереключение")
+                );
+            }
+        }
+        tray.set(letters, look, &tip);
     }
 
     /// Note where the window is, to be saved once it rests.

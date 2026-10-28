@@ -58,22 +58,35 @@ impl TrayCmd {
     }
 }
 
+/// How the icon's letters are shown.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    /// In the taskbar's text colour.
+    Plain,
+    /// Grey: every key goes through.
+    Paused,
+    /// White on a blue square: the automatic switch is on.
+    Auto,
+    /// White on a red square: what is typed is kept or written (the key
+    /// trace, the list of conversions), as the toolbar warns in red.
+    Warning,
+}
+
 pub struct Tray {
     hwnd: isize,
     icon: isize,
-    /// What the icon shows: the letters, the taskbar light, paused, the
-    /// automatic switch on.
-    shown: (String, bool, bool, bool),
+    /// What the icon shows: the letters, the taskbar light, the look.
+    shown: (String, bool, Look),
     tip: String,
 }
 
 impl Tray {
     /// The icon added for `hwnd`; `None` if the shell refused it.
     pub fn new(hwnd: isize) -> Option<Tray> {
-        let shown = ("··".to_owned(), taskbar_is_light(), false, false);
+        let shown = ("··".to_owned(), taskbar_is_light(), Look::Plain);
         let mut tray = Tray {
             hwnd,
-            icon: letters_icon(&shown.0, shown.1, shown.2, shown.3),
+            icon: letters_icon(&shown.0, shown.1, shown.2),
             shown,
             tip: crate::APP_NAME.to_owned(),
         };
@@ -105,15 +118,14 @@ impl Tray {
         added
     }
 
-    /// The letters of the layout, greyed while paused, blue while the
-    /// automatic switch is on (`auto`); the tooltip.
-    pub fn set(&mut self, letters: &str, paused: bool, auto: bool, tip: &str) {
+    /// The letters of the layout in the given look; the tooltip.
+    pub fn set(&mut self, letters: &str, look: Look, tip: &str) {
         let light = taskbar_is_light();
-        let wanted = (letters.to_owned(), light, paused, auto);
+        let wanted = (letters.to_owned(), light, look);
         let mut d = self.data();
         d.uFlags = NIF_TIP | NIF_SHOWTIP;
         if wanted != self.shown {
-            let icon = letters_icon(letters, light, paused, auto);
+            let icon = letters_icon(letters, light, look);
             if icon != 0 {
                 if self.icon != 0 {
                     unsafe {
@@ -177,11 +189,11 @@ pub fn taskbar_is_light() -> bool {
 
 /// An icon of the small-icon size with `letters` in bold Segoe UI, dark
 /// on a light taskbar and white on a dark one, grey while paused, white
-/// on a blue rounded square while the automatic switch is on (`auto`).
+/// on a blue or a red rounded square (`Look::Auto`, `Look::Warning`).
 /// GDI writes no alpha, so the text is drawn white on black and its
 /// brightness becomes the alpha (premultiplied, as icons want), or the
 /// blend with the background.
-fn letters_icon(letters: &str, light: bool, paused: bool, auto: bool) -> isize {
+fn letters_icon(letters: &str, light: bool, look: Look) -> isize {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Graphics::Gdi::{
         ANTIALIASED_QUALITY, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, CLIP_DEFAULT_PRECIS,
@@ -194,15 +206,18 @@ fn letters_icon(letters: &str, light: bool, paused: bool, auto: bool) -> isize {
         CreateIconIndirect, GetSystemMetrics, ICONINFO, SM_CXSMICON,
     };
     let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
-    // The taskbar's text colour, grey while paused; while the automatic
-    // switch is on (and not paused), white on a blue rounded square.
-    let background = (auto && !paused).then_some((0x1E_u32, 0x6F_u32, 0xD9_u32));
-    let (r, g, b) = match (light, paused, background.is_some()) {
-        (_, _, true) => (0xFF, 0xFF, 0xFF),
-        (true, true, _) => (0x90, 0x90, 0x90),
-        (false, true, _) => (0x80, 0x80, 0x80),
-        (true, false, _) => (0x1A, 0x1A, 0x1A),
-        (false, false, _) => (0xFF, 0xFF, 0xFF),
+    // The letters' colour and the square behind them, if any.
+    let background = match look {
+        Look::Auto => Some((0x1E_u32, 0x6F_u32, 0xD9_u32)),
+        Look::Warning => Some((0xD0_u32, 0x2A_u32, 0x2A_u32)),
+        Look::Plain | Look::Paused => None,
+    };
+    let (r, g, b) = match (look, light) {
+        (Look::Auto | Look::Warning, _) => (0xFF, 0xFF, 0xFF),
+        (Look::Paused, true) => (0x90, 0x90, 0x90),
+        (Look::Paused, false) => (0x80, 0x80, 0x80),
+        (Look::Plain, true) => (0x1A, 0x1A, 0x1A),
+        (Look::Plain, false) => (0xFF, 0xFF, 0xFF),
     };
     // Inside the rounded square that fills the icon.
     let radius = size as f32 * 0.3;
@@ -381,7 +396,7 @@ mod tests {
 
     #[test]
     fn letters_make_an_icon() {
-        let icon = letters_icon("RU", true, false, false);
+        let icon = letters_icon("RU", true, Look::Warning);
         assert_ne!(icon, 0);
         unsafe { windows_sys::Win32::UI::WindowsAndMessaging::DestroyIcon(icon as _) };
     }

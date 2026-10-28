@@ -27,7 +27,7 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 - **Selected text**: with nothing typed, the gesture converts the selection instead, in any program that exposes its text to UI Automation (editors, browsers, Office, messengers).
 - **Automatic switching**, optional: a word typed in the wrong layout is converted by itself at the space after it; the letter statistics of the two languages decide, and a wrong guess is undone with the gesture (see [Automatic switching](#automatic-switching)).
 - **Caps Lock as the layout switch**: optional; Shift+Caps Lock stays the real Caps Lock.
-- **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, on a blue square while the automatic switch is on, grey while paused.
+- **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, on a blue square while the automatic switch is on, on a red one while the key trace or the list of conversions is on, grey while paused.
 - **A badge near the caret**: the layout's letters appear under the caret for a moment whenever the layout changes, or stay beside it as it moves, in a size and a colour of choice (see [The badge near the caret](#the-badge-near-the-caret)).
 - **Rules per program**: do nothing in games and remote desktops, start a program in a given layout (see [Programs](#programs)).
 - **Any pair of installed layouts**, not only English and Russian.
@@ -142,7 +142,7 @@ A second start of `qswitch.exe` only brings the window of the running copy forwa
 
 The update check is optional and off by default. With **Check for updates at start-up (once a day)** enabled in the About window, the program asks the GitHub Releases API (`api.github.com`) for the latest release at most once a day; **Check now** in the same window asks at once. The request carries nothing but the program version in its `User-Agent` header, and nothing is downloaded or installed: when a newer release exists, a button with its version appears beside the About button and opens the release page in the browser. Otherwise the program does not access the network.
 
-The keys typed are kept in memory only as long as they can still be converted (until the caret moves), and are never written to disk; the Status page's list of recent conversions is off until its check box is turned on, lives in memory while it is on and goes with the program. The one exception is the check box on the Status page that writes a trace of the keys to a file next to the settings, for finding out what a program does with the converted text; it is off at every start. While either is on, the toolbar says so in red, since passwords are typed and converted like any other word.
+The keys typed are kept in memory only as long as they can still be converted (until the caret moves), and are never written to disk; the Status page's list of recent conversions is off until its check box is turned on, lives in memory while it is on and goes with the program. The one exception is the check box on the Status page that writes a trace of the keys to a file next to the settings, for finding out what a program does with the converted text; it is off at every start. While either is on, the toolbar says so in red and the icon in the notification area turns red, since passwords are typed and converted like any other word.
 
 ## Building
 
