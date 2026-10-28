@@ -1,6 +1,6 @@
 //! Procedurally drawn application icon: a key cap split by a diagonal,
 //! blue above it with a white Latin A, white below it with a graphite
-//! Cyrillic Я: one key, two layouts. Dependency-free so that `build.rs`
+//! Cyrillic Ф: one key, two layouts. Dependency-free so that `build.rs`
 //! can include this file (`#[path = "src/icon.rs"]`) to produce the `.ico`
 //! embedded in the executable and the raw RGBA the app shows (window icon,
 //! About), so that nothing is rasterised at start-up.
@@ -88,9 +88,14 @@ fn stroke(x: f32, y: f32, path: &[(f32, f32)], w: f32) -> f32 {
     d - w / 2.0
 }
 
-/// Distance to a ring of radius `r` and stroke `w` around `c`.
-fn ring(x: f32, y: f32, c: (f32, f32), r: f32, w: f32) -> f32 {
-    (((x - c.0).powi(2) + (y - c.1).powi(2)).sqrt() - r).abs() - w / 2.0
+/// Distance to an elliptical ring of radii `r` and stroke `w` around `c`,
+/// to the first order (the level set's value over its gradient), which is
+/// exact enough for an ellipse this round.
+fn oval_ring(x: f32, y: f32, c: (f32, f32), r: (f32, f32), w: f32) -> f32 {
+    let (dx, dy) = (x - c.0, y - c.1);
+    let f = ((dx / r.0).powi(2) + (dy / r.1).powi(2)).sqrt();
+    let grad = ((dx / (r.0 * r.0)).powi(2) + (dy / (r.1 * r.1)).powi(2)).sqrt() / f.max(1e-6);
+    ((f - 1.0) / grad.max(1e-6)).abs() - w / 2.0
 }
 
 /// Coverage of a shape at distance `d` with an edge of `px`.
@@ -129,13 +134,12 @@ fn sample(x: f32, y: f32, px: f32) -> Rgba {
     let a_bar = stroke(x, y, &[(0.235, 0.455), (0.405, 0.455)], w * 0.9);
     let a = a_legs.min(a_bar);
     c = over(c, with_alpha(hex(0xffffff), fill(a, px)));
-    // Я, graphite, in the white half: a stem on the right, a bowl at its
-    // top on the left, a leg from the bowl down to the left.
-    let stem = stroke(x, y, &[(0.76, 0.44), (0.76, 0.84)], w);
-    let bowl = ring(x, y, (0.665, 0.545), 0.095, w).max(x - 0.76);
-    let leg = stroke(x, y, &[(0.69, 0.64), (0.555, 0.84)], w);
-    let ya = stem.min(bowl).min(leg);
-    c = over(c, with_alpha(hex(0x2b3340), fill(ya, px)));
+    // Ф, graphite, in the white half: a stem with an oval around its
+    // middle.
+    let stem = stroke(x, y, &[(0.70, 0.42), (0.70, 0.84)], w);
+    let oval = oval_ring(x, y, (0.70, 0.63), (0.155, 0.135), w * 0.95);
+    let ef = stem.min(oval);
+    c = over(c, with_alpha(hex(0x2b3340), fill(ef, px)));
     c
 }
 
@@ -232,10 +236,12 @@ mod tests {
         assert_eq!(px[3], 0);
         let c = ((32 * 64) + 32) * 4;
         assert_eq!(px[c + 3], 255);
-        // Blue above the diagonal, white below.
+        // Blue above the diagonal, white below (beside the Ф), the Ф's
+        // stem graphite.
         let at = |x: usize, y: usize| &px[(y * 64 + x) * 4..(y * 64 + x) * 4 + 3];
         assert!(at(12, 8)[2] > at(12, 8)[0] + 60, "{:?}", at(12, 8));
-        assert!(at(44, 48).iter().all(|&v| v > 200), "{:?}", at(44, 48));
+        assert!(at(57, 35).iter().all(|&v| v > 200), "{:?}", at(57, 35));
+        assert!(at(45, 50).iter().all(|&v| v < 80), "{:?}", at(45, 50));
         let ico = ico(&[16, 32]);
         assert_eq!(&ico[..6], &[0, 0, 1, 0, 2, 0]);
     }
