@@ -155,6 +155,7 @@ impl App {
             layouts: layouts.iter().map(|l| (l.hkl, l.code.clone())).collect(),
             indicator: settings.indicator,
             indicator_ms: settings.indicator_ms,
+            indicator_size: settings.indicator_size,
             indicator_on_caret: settings.indicator_on_caret,
         };
         let events = hook::start(setup.clone(), cc.egui_ctx.clone());
@@ -383,6 +384,7 @@ impl App {
                 .collect(),
             indicator: self.settings.indicator,
             indicator_ms: self.settings.indicator_ms,
+            indicator_size: self.settings.indicator_size,
             indicator_on_caret: self.settings.indicator_on_caret,
         };
         if setup != self.setup {

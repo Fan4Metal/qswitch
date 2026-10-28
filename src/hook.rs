@@ -71,6 +71,8 @@ pub struct Setup {
     pub layouts: Vec<(Hkl, String)>,
     pub indicator: crate::settings::IndicatorMode,
     pub indicator_ms: u64,
+    /// The size of the badge's letters, points.
+    pub indicator_size: u32,
     pub indicator_on_caret: bool,
 }
 
@@ -216,6 +218,7 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             layouts: Vec::new(),
             indicator: Default::default(),
             indicator_ms: 700,
+            indicator_size: 10,
             indicator_on_caret: true,
         });
     let mut state = State {
@@ -387,6 +390,7 @@ impl State {
             indicator.configure(
                 setup.indicator,
                 setup.indicator_ms,
+                setup.indicator_size,
                 setup.indicator_on_caret,
             );
         }

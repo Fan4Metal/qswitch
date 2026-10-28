@@ -97,6 +97,10 @@ impl IndicatorMode {
     ];
 }
 
+/// The sizes the badge's letters may have, points (the Gestures page's
+/// slider; a hand-edited value outside is put back to the default).
+pub const INDICATOR_SIZES: std::ops::RangeInclusive<u32> = 6..=32;
+
 /// A rule for one program: by the file name of its exe, case-insensitive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rule {
@@ -130,6 +134,8 @@ pub struct Settings {
     pub indicator: IndicatorMode,
     /// How long the badge stays when shown for a moment, milliseconds.
     pub indicator_ms: u64,
+    /// The size of the badge's letters, points.
+    pub indicator_size: u32,
     /// Shown for a moment also when the caret is placed (a click, another
     /// field or window), in the `on_switch` mode.
     pub indicator_on_caret: bool,
@@ -159,6 +165,7 @@ impl Default for Settings {
             caps_lock_switch: engine.caps_lock_switch,
             indicator: IndicatorMode::OnSwitch,
             indicator_ms: 700,
+            indicator_size: 10,
             indicator_on_caret: true,
             tap_ms: engine.tap_ms,
             gap_ms: engine.gap_ms,
@@ -259,6 +266,9 @@ impl Settings {
         if !(200..=5000).contains(&self.indicator_ms) {
             self.indicator_ms = d.indicator_ms;
         }
+        if !(INDICATOR_SIZES).contains(&self.indicator_size) {
+            self.indicator_size = d.indicator_size;
+        }
         if self.layouts.len() != 2 || self.layouts[0] == self.layouts[1] {
             self.layouts.clear();
         }
@@ -349,6 +359,7 @@ mod tests {
         assert!(settings.close_to_tray);
         assert!(settings.keep_conversions);
         assert!(settings.indicator_on_caret);
+        assert_eq!(settings.indicator_size, 10);
         assert_eq!(settings.rule_for(r"C:\Games\game.exe"), Some(RuleMode::Off));
         assert_eq!(settings.rule_for("other.exe"), None);
     }
@@ -357,6 +368,7 @@ mod tests {
     fn round_trip_and_checks() {
         let mut s = Settings {
             tap_ms: 5,
+            indicator_size: 100,
             layouts: vec!["04090409".into()],
             ..Settings::default()
         };
@@ -367,6 +379,7 @@ mod tests {
         let json = serde_json::to_string(&s).unwrap();
         let back: Settings = serde_json::from_str::<Settings>(&json).unwrap().checked();
         assert_eq!(back.tap_ms, Settings::default().tap_ms);
+        assert_eq!(back.indicator_size, Settings::default().indicator_size);
         assert!(back.layouts.is_empty());
         assert_eq!(back.rules.len(), Settings::default().rules.len());
         let d: Settings = serde_json::from_str("{}").unwrap();

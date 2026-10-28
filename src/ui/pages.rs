@@ -6,7 +6,7 @@ use egui::Ui;
 
 use crate::app::App;
 use crate::engine::Trigger;
-use crate::settings::{IndicatorMode, Rule, RuleMode, file_name};
+use crate::settings::{INDICATOR_SIZES, IndicatorMode, Rule, RuleMode, file_name};
 
 /// Width of the combo boxes.
 const COMBO: f32 = 260.0;
@@ -224,6 +224,18 @@ pub fn gestures(app: &mut App, ui: &mut Ui) {
                     }
                 });
             ui.end_row();
+            if app.settings.indicator != IndicatorMode::Off {
+                ui.label(tr!("Letters", "Буквы"));
+                ui.add(
+                    egui::Slider::new(&mut app.settings.indicator_size, INDICATOR_SIZES)
+                        .suffix(tr!(" pt", " пт")),
+                )
+                .on_hover_text(tr!(
+                    "The badge is shown beside the pointer while the size is chosen.",
+                    "Пока размер выбирается, метка показывается рядом с указателем."
+                ));
+                ui.end_row();
+            }
             if app.settings.indicator == IndicatorMode::OnSwitch {
                 ui.label(tr!("Shown for", "Показывается"));
                 ui.add(

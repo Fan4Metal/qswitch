@@ -36,8 +36,6 @@ use crate::settings::IndicatorMode;
 
 /// The badge's transparency (255: opaque).
 const ALPHA: u8 = 235;
-/// Point size of the letters.
-const POINTS: i32 = 10;
 /// How long the badge waits for the caret thread before it goes beside
 /// the pointer.
 const ASK_MS: u64 = 400;
@@ -82,6 +80,8 @@ pub struct Indicator {
     hwnd: isize,
     mode: IndicatorMode,
     duration_ms: u64,
+    /// Point size of the letters (`settings.indicator_size`).
+    points: u32,
     letters: String,
     /// The caret's place on the screen, as last reported for the window in
     /// front; forgotten when another window comes to the front.
@@ -89,8 +89,8 @@ pub struct Indicator {
     /// When to hide, in `OnSwitch` mode (`GetTickCount64`).
     hide_at: Option<u64>,
     visible: bool,
-    /// The DPI the font was made for.
-    font_dpi: u32,
+    /// The DPI and the point size the font was made for.
+    font_for: (u32, u32),
     /// The caret thread ([`crate::caret::spawn`]).
     finder: Option<Sender<(u64, bool)>>,
     /// The question to it the badge waits for.
@@ -149,11 +149,12 @@ impl Indicator {
             hwnd: hwnd as isize,
             mode: IndicatorMode::Off,
             duration_ms: 700,
+            points: 10,
             letters: String::new(),
             caret: None,
             hide_at: None,
             visible: false,
-            font_dpi: 0,
+            font_for: (0, 0),
             finder: None,
             asked: None,
             on_caret: true,
@@ -167,12 +168,26 @@ impl Indicator {
         self.finder = finder;
     }
 
-    pub fn configure(&mut self, mode: IndicatorMode, duration_ms: u64, on_caret: bool) {
+    pub fn configure(
+        &mut self,
+        mode: IndicatorMode,
+        duration_ms: u64,
+        points: u32,
+        on_caret: bool,
+    ) {
+        let resized = points != self.points;
         self.mode = mode;
         self.duration_ms = duration_ms;
+        self.points = points;
         self.on_caret = on_caret;
         if mode != IndicatorMode::Always {
             self.hide();
+        }
+        // A new size is shown at once, beside the pointer (on the slider),
+        // so it can be judged while being chosen.
+        if resized && mode != IndicatorMode::Off && !self.letters.is_empty() {
+            self.hide_at = Some(now() + self.duration_ms.max(1000));
+            self.show_at(None);
         }
     }
 
@@ -357,14 +372,17 @@ impl Indicator {
             }
             .max(96);
             let scale = dpi as f32 / 96.0;
-            if self.font_dpi != dpi {
+            // Paddings and the corners grow with the letters: at 10 pt and
+            // 96 dpi, 5 px at the sides, 2 px above and below, 6 px corners.
+            let em = self.points as f32 * scale / 10.0;
+            if self.font_for != (dpi, self.points) {
                 let old = PAINT.with_borrow(|p| p.font);
                 if old != 0 {
                     DeleteObject(old as _);
                 }
                 let face = crate::win::wide("Segoe UI");
                 let font = CreateFontW(
-                    -(POINTS * dpi as i32 / 72),
+                    -(self.points as i32 * dpi as i32 / 72),
                     0,
                     0,
                     0,
@@ -380,7 +398,7 @@ impl Indicator {
                     face.as_ptr(),
                 );
                 PAINT.with_borrow_mut(|p| p.font = font as isize);
-                self.font_dpi = dpi;
+                self.font_for = (dpi, self.points);
             }
             // The letters' size.
             let dc = CreateCompatibleDC(std::ptr::null_mut());
@@ -391,8 +409,8 @@ impl Indicator {
             GetTextExtentPoint32W(dc, text.as_ptr(), text.len() as i32, &mut size);
             SelectObject(dc, old);
             DeleteDC(dc);
-            let width = size.cx + (10.0 * scale) as i32;
-            let height = size.cy + (4.0 * scale) as i32;
+            let width = size.cx + (10.0 * em) as i32;
+            let height = size.cy + (4.0 * em) as i32;
             // Below and right of the caret, else beside the pointer.
             let gap = (4.0 * scale) as i32;
             let (mut x, mut y, above) = match caret {
@@ -425,8 +443,8 @@ impl Indicator {
                 0,
                 width + 1,
                 height + 1,
-                (6.0 * scale) as i32,
-                (6.0 * scale) as i32,
+                (6.0 * em) as i32,
+                (6.0 * em) as i32,
             );
             SetWindowRgn(self.hwnd as _, region, 1);
             SetWindowPos(
