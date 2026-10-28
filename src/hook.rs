@@ -69,11 +69,7 @@ pub struct Setup {
     pub rules: Vec<Rule>,
     /// The installed layouts with their letters, for the badge.
     pub layouts: Vec<(Hkl, String)>,
-    pub indicator: crate::settings::IndicatorMode,
-    pub indicator_ms: u64,
-    /// The size of the badge's letters, points.
-    pub indicator_size: u32,
-    pub indicator_on_caret: bool,
+    pub indicator: crate::indicator::Config,
 }
 
 /// Marks the thread's own injected input (`dwExtraInfo`), which the hook
@@ -88,6 +84,8 @@ const WM_JOB: u32 = WM_APP + 2;
 const WM_TOGGLE: u32 = WM_APP + 3;
 /// The caret thread answered (`CARET_ANSWER`).
 const WM_CARET: u32 = WM_APP + 4;
+/// The window asks to see the badge (beside the pointer).
+const WM_PREVIEW: u32 = WM_APP + 5;
 /// How often the layout is looked at (it changes by Alt+Shift too).
 const POLL_MS: u32 = 150;
 
@@ -181,10 +179,49 @@ pub fn set_paused(paused: bool) {
     post(WM_RELOAD);
 }
 
+/// Gives up the raw input of the keyboard and the mouse that winit
+/// registers for its window (for its device events, which egui does not
+/// use). While a process has it, Windows does not call that process's
+/// low-level keyboard hook for the keys typed into its own windows: with
+/// it, the gesture did nothing in the "try here" field. Called from the
+/// main thread once the window exists (`App::new`), after winit's
+/// registration.
+pub fn release_raw_input() {
+    use windows_sys::Win32::UI::Input::{RAWINPUTDEVICE, RIDEV_REMOVE, RegisterRawInputDevices};
+    const GENERIC_DESKTOP: u16 = 1;
+    const MOUSE: u16 = 2;
+    const KEYBOARD: u16 = 6;
+    let remove = |usage| RAWINPUTDEVICE {
+        usUsagePage: GENERIC_DESKTOP,
+        usUsage: usage,
+        dwFlags: RIDEV_REMOVE,
+        hwndTarget: std::ptr::null_mut(),
+    };
+    let devices = [remove(KEYBOARD), remove(MOUSE)];
+    let ok = unsafe {
+        RegisterRawInputDevices(
+            devices.as_ptr(),
+            devices.len() as u32,
+            size_of::<RAWINPUTDEVICE>() as u32,
+        )
+    };
+    if ok == 0 {
+        log::warn!(
+            "raw input not released: {}",
+            std::io::Error::last_os_error()
+        );
+    }
+}
+
 /// The tray icon clicked: the window that was in front before the
 /// taskbar takes the other layout of the pair (the focus stays put).
 pub fn toggle_layout() {
     post(WM_TOGGLE);
+}
+
+/// The badge for a moment beside the pointer (the window's "Show").
+pub fn preview_badge() {
+    post(WM_PREVIEW);
 }
 
 /// End the thread (the hooks are removed with it).
@@ -217,9 +254,6 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             rules: Vec::new(),
             layouts: Vec::new(),
             indicator: Default::default(),
-            indicator_ms: 700,
-            indicator_size: 10,
-            indicator_on_caret: true,
         });
     let mut state = State {
         engine: Engine::new(setup.config.clone()),
@@ -325,6 +359,13 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
             WM_TOGGLE => {
                 with_state(State::toggle_from_tray);
             }
+            WM_PREVIEW => {
+                with_state(|s| {
+                    if let Some(indicator) = &mut s.indicator {
+                        indicator.preview();
+                    }
+                });
+            }
             WM_CARET => {
                 let answer = CARET_ANSWER
                     .lock()
@@ -387,12 +428,7 @@ impl State {
         self.rules = setup.rules;
         self.layouts = setup.layouts;
         if let Some(indicator) = &mut self.indicator {
-            indicator.configure(
-                setup.indicator,
-                setup.indicator_ms,
-                setup.indicator_size,
-                setup.indicator_on_caret,
-            );
+            indicator.configure(setup.indicator);
         }
         self.engine.set_config(setup.config);
         self.mode = rule_for(&self.rules, &self.exe);
@@ -618,8 +654,9 @@ impl State {
             let flash = self.last_layout.is_some();
             self.last_layout = Some(hkl);
             let letters = self.letters_of(hkl);
+            let index = self.index_of(hkl);
             if let Some(indicator) = &mut self.indicator {
-                indicator.set_letters(&letters, flash);
+                indicator.set_letters(&letters, index, flash);
             }
             if tracing() {
                 self.send(Event::Trace(format!("layout {:08x}", hkl as u32)));
@@ -733,6 +770,35 @@ fn top_app_window() -> Option<isize> {
         hwnd = unsafe { GetWindow(hwnd as _, GW_HWNDNEXT) } as isize;
     }
     None
+}
+
+/// The exe file names of the programs with a window on the screen now
+/// ([`is_app_window`]), each once, sorted; not this program's. For the
+/// Programs page; any thread.
+pub fn running_programs() -> Vec<String> {
+    use windows_sys::Win32::UI::WindowsAndMessaging::EnumWindows;
+    unsafe extern "system" fn each(hwnd: HWND, lparam: LPARAM) -> i32 {
+        // SAFETY: lparam is the Vec this call made, alive until EnumWindows returns.
+        let names = unsafe { &mut *(lparam as *mut Vec<String>) };
+        let hwnd = hwnd as isize;
+        if !is_taskbar(hwnd)
+            && is_app_window(hwnd)
+            && let Some(path) = process_name(hwnd)
+        {
+            names.push(crate::settings::file_name(&path).to_owned());
+        }
+        1
+    }
+    let mut names: Vec<String> = Vec::new();
+    unsafe { EnumWindows(Some(each), (&raw mut names) as LPARAM) };
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|e| e.file_name().map(|n| n.to_string_lossy().to_lowercase()))
+        .unwrap_or_default();
+    names.retain(|n| n.to_lowercase() != own);
+    names.sort_by_key(|n| n.to_lowercase());
+    names.dedup_by_key(|n| n.to_lowercase());
+    names
 }
 
 const TASKBAR_CLASSES: [&str; 4] = [

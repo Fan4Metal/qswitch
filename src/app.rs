@@ -32,17 +32,17 @@ pub struct Conversion {
 pub enum Page {
     #[default]
     Status,
-    Gestures,
+    Settings,
     Programs,
 }
 
 impl Page {
-    pub const ALL: [Page; 3] = [Page::Status, Page::Gestures, Page::Programs];
+    pub const ALL: [Page; 3] = [Page::Status, Page::Settings, Page::Programs];
 
     pub fn label(self) -> &'static str {
         match self {
             Page::Status => tr!("Status", "Состояние"),
-            Page::Gestures => tr!("Gestures", "Жесты"),
+            Page::Settings => tr!("Settings", "Настройки"),
             Page::Programs => tr!("Programs", "Программы"),
         }
     }
@@ -86,6 +86,11 @@ pub struct App {
     exiting: bool,
     /// Text of the "add a program" field (Programs page).
     pub new_rule: String,
+    /// The programs with a window now, for the Programs page, and when
+    /// they were listed.
+    pub running: Option<(Instant, Vec<String>)>,
+    /// The "try here" field of the Status page.
+    pub try_text: String,
     /// The trace file while tracing is on (Status page).
     trace: Option<std::io::BufWriter<std::fs::File>>,
 }
@@ -153,17 +158,17 @@ impl App {
             pair,
             rules: settings.rules.clone(),
             layouts: layouts.iter().map(|l| (l.hkl, l.code.clone())).collect(),
-            indicator: settings.indicator,
-            indicator_ms: settings.indicator_ms,
-            indicator_size: settings.indicator_size,
-            indicator_on_caret: settings.indicator_on_caret,
+            indicator: settings.indicator_config(),
         };
+        // Else the hook sees no key typed into this window (the "try
+        // here" field).
+        hook::release_raw_input();
         let events = hook::start(setup.clone(), cc.egui_ctx.clone());
         let tray = hwnd.and_then(Tray::new);
         if tray.is_none() {
             log::warn!("no tray icon");
         }
-        Self {
+        let mut app = Self {
             saved: settings.clone(),
             settings,
             setup,
@@ -186,8 +191,16 @@ impl App {
             autostart: crate::autostart::is_enabled(),
             exiting: false,
             new_rule: String::new(),
+            running: None,
+            try_text: String::new(),
             trace: None,
+        };
+        // QSWITCH_TRACE set: the trace from the first key (a check without
+        // the window).
+        if std::env::var_os("QSWITCH_TRACE").is_some() {
+            app.set_tracing(true);
         }
+        app
     }
 
     /// Where the trace is written: next to the settings.
@@ -382,10 +395,7 @@ impl App {
                 .iter()
                 .map(|l| (l.hkl, l.code.clone()))
                 .collect(),
-            indicator: self.settings.indicator,
-            indicator_ms: self.settings.indicator_ms,
-            indicator_size: self.settings.indicator_size,
-            indicator_on_caret: self.settings.indicator_on_caret,
+            indicator: self.settings.indicator_config(),
         };
         if setup != self.setup {
             self.pair = pair;
@@ -538,6 +548,17 @@ impl eframe::App for App {
         if !self.about.open && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F1)) {
             self.about.toggle();
         }
+        // Esc hides the window as the close button does, unless a field
+        // or a list has it.
+        let busy = ctx.memory(|m| m.focused().is_some()) || ctx.any_popup_open();
+        if !self.about.open
+            && !busy
+            && self.settings.close_to_tray
+            && self.tray.is_some()
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape))
+        {
+            self.hide();
+        }
         egui::Panel::top("toolbar").show(root_ui, |ui| self.toolbar(ui));
         egui::Panel::left("pages")
             .resizable(false)
@@ -558,7 +579,7 @@ impl eframe::App for App {
                 .auto_shrink(false)
                 .show(ui, |ui| match self.page {
                     Page::Status => crate::ui::pages::status(self, ui),
-                    Page::Gestures => crate::ui::pages::gestures(self, ui),
+                    Page::Settings => crate::ui::pages::settings(self, ui),
                     Page::Programs => crate::ui::pages::programs(self, ui),
                 });
         });

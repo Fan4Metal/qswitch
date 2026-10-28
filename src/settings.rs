@@ -101,6 +101,24 @@ impl IndicatorMode {
 /// slider; a hand-edited value outside is put back to the default).
 pub const INDICATOR_SIZES: std::ops::RangeInclusive<u32> = 6..=32;
 
+/// The badge's colours for the pair until chosen: a blue and a red.
+pub const DEFAULT_COLORS: [&str; 2] = ["#2F6FD6", "#C0392B"];
+
+/// `#RRGGBB` as bytes; `None` for anything else.
+pub fn color_of(hex: &str) -> Option<[u8; 3]> {
+    let digits = hex.strip_prefix('#')?;
+    if digits.len() != 6 {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&digits[i..i + 2], 16).ok();
+    Some([byte(0)?, byte(2)?, byte(4)?])
+}
+
+/// Bytes as `#RRGGBB`.
+pub fn hex_of(rgb: [u8; 3]) -> String {
+    format!("#{:02X}{:02X}{:02X}", rgb[0], rgb[1], rgb[2])
+}
+
 /// A rule for one program: by the file name of its exe, case-insensitive.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rule {
@@ -136,6 +154,11 @@ pub struct Settings {
     pub indicator_ms: u64,
     /// The size of the badge's letters, points.
     pub indicator_size: u32,
+    /// The badge takes the colour of the layout (`indicator_colors`);
+    /// off, it is grey as the taskbar.
+    pub indicator_colored: bool,
+    /// The badge's colour for each layout of the pair, `#RRGGBB`.
+    pub indicator_colors: [String; 2],
     /// Shown for a moment also when the caret is placed (a click, another
     /// field or window), in the `on_switch` mode.
     pub indicator_on_caret: bool,
@@ -166,6 +189,8 @@ impl Default for Settings {
             indicator: IndicatorMode::OnSwitch,
             indicator_ms: 700,
             indicator_size: 10,
+            indicator_colored: false,
+            indicator_colors: [DEFAULT_COLORS[0].to_owned(), DEFAULT_COLORS[1].to_owned()],
             indicator_on_caret: true,
             tap_ms: engine.tap_ms,
             gap_ms: engine.gap_ms,
@@ -269,11 +294,33 @@ impl Settings {
         if !(INDICATOR_SIZES).contains(&self.indicator_size) {
             self.indicator_size = d.indicator_size;
         }
+        for (color, default) in self.indicator_colors.iter_mut().zip(&d.indicator_colors) {
+            if color_of(color).is_none() {
+                *color = default.clone();
+            }
+        }
         if self.layouts.len() != 2 || self.layouts[0] == self.layouts[1] {
             self.layouts.clear();
         }
         self.rules.retain(|r| !r.exe.trim().is_empty());
         self
+    }
+
+    /// The badge's part of the settings.
+    pub fn indicator_config(&self) -> crate::indicator::Config {
+        let d = Settings::default();
+        let color = |i: usize| {
+            color_of(&self.indicator_colors[i])
+                .or_else(|| color_of(&d.indicator_colors[i]))
+                .unwrap_or([0, 0, 0])
+        };
+        crate::indicator::Config {
+            mode: self.indicator,
+            duration_ms: self.indicator_ms,
+            points: self.indicator_size,
+            colors: self.indicator_colored.then(|| [color(0), color(1)]),
+            on_caret: self.indicator_on_caret,
+        }
     }
 
     /// The machine's part of the settings.
@@ -369,6 +416,7 @@ mod tests {
         let mut s = Settings {
             tap_ms: 5,
             indicator_size: 100,
+            indicator_colors: ["#12345".into(), "#aBcDeF".into()],
             layouts: vec!["04090409".into()],
             ..Settings::default()
         };
@@ -380,10 +428,30 @@ mod tests {
         let back: Settings = serde_json::from_str::<Settings>(&json).unwrap().checked();
         assert_eq!(back.tap_ms, Settings::default().tap_ms);
         assert_eq!(back.indicator_size, Settings::default().indicator_size);
+        assert_eq!(back.indicator_colors[0], DEFAULT_COLORS[0]);
+        assert_eq!(back.indicator_colors[1], "#aBcDeF");
         assert!(back.layouts.is_empty());
         assert_eq!(back.rules.len(), Settings::default().rules.len());
         let d: Settings = serde_json::from_str("{}").unwrap();
         assert_eq!(d, Settings::default());
+    }
+
+    #[test]
+    fn colors_round_trip() {
+        assert_eq!(color_of("#2F6FD6"), Some([0x2F, 0x6F, 0xD6]));
+        assert_eq!(color_of("#2f6fd6"), Some([0x2F, 0x6F, 0xD6]));
+        assert_eq!(color_of("2F6FD6"), None);
+        assert_eq!(color_of("#2F6FD"), None);
+        assert_eq!(color_of("#2F6FDG"), None);
+        assert_eq!(hex_of([0x2F, 0x6F, 0xD6]), "#2F6FD6");
+        let d = Settings::default().indicator_config();
+        assert_eq!(d.colors, None);
+        let colored = Settings {
+            indicator_colored: true,
+            ..Settings::default()
+        }
+        .indicator_config();
+        assert_eq!(colored.colors, Some([[0x2F, 0x6F, 0xD6], [0xC0, 0x39, 0x2B]]));
     }
 
     #[test]

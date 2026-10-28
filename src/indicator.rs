@@ -65,24 +65,52 @@ struct Placed {
     before: Option<RECT>,
 }
 
+/// The badge's settings (`Settings::indicator_config`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Config {
+    pub mode: IndicatorMode,
+    /// How long the badge stays when shown for a moment.
+    pub duration_ms: u64,
+    /// Point size of the letters.
+    pub points: u32,
+    /// The badge's colour for each layout of the pair; `None`: grey as
+    /// the taskbar.
+    pub colors: Option<[[u8; 3]; 2]>,
+    /// Shown for a moment when the caret is placed (`OnSwitch` mode).
+    pub on_caret: bool,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Config {
+            mode: IndicatorMode::Off,
+            duration_ms: 700,
+            points: 10,
+            colors: None,
+            on_caret: true,
+        }
+    }
+}
+
 /// What the window procedure paints with (the window's thread only).
 struct Paint {
     letters: Vec<u16>,
     light: bool,
+    /// The layout's colour (`COLORREF`), else grey after `light`.
+    color: Option<u32>,
     font: isize,
 }
 
 thread_local! {
-    static PAINT: RefCell<Paint> = const { RefCell::new(Paint { letters: Vec::new(), light: false, font: 0 }) };
+    static PAINT: RefCell<Paint> = const { RefCell::new(Paint { letters: Vec::new(), light: false, color: None, font: 0 }) };
 }
 
 pub struct Indicator {
     hwnd: isize,
-    mode: IndicatorMode,
-    duration_ms: u64,
-    /// Point size of the letters (`settings.indicator_size`).
-    points: u32,
+    config: Config,
     letters: String,
+    /// The layout's place in the pair, for its colour.
+    index: Option<u8>,
     /// The caret's place on the screen, as last reported for the window in
     /// front; forgotten when another window comes to the front.
     caret: Option<RECT>,
@@ -95,8 +123,6 @@ pub struct Indicator {
     finder: Option<Sender<(u64, bool)>>,
     /// The question to it the badge waits for.
     asked: Option<Asked>,
-    /// Shown for a moment when the caret is placed (`OnSwitch` mode).
-    on_caret: bool,
     /// A caret placed, looked for when [`PLACED_TIMER`] fires.
     placed: Option<Placed>,
     /// Questions asked so far (their numbers).
@@ -147,17 +173,15 @@ impl Indicator {
         unsafe { SetLayeredWindowAttributes(hwnd, 0, ALPHA, LWA_ALPHA) };
         Some(Indicator {
             hwnd: hwnd as isize,
-            mode: IndicatorMode::Off,
-            duration_ms: 700,
-            points: 10,
+            config: Config::default(),
             letters: String::new(),
+            index: None,
             caret: None,
             hide_at: None,
             visible: false,
             font_for: (0, 0),
             finder: None,
             asked: None,
-            on_caret: true,
             placed: None,
             questions: 0,
         })
@@ -168,41 +192,43 @@ impl Indicator {
         self.finder = finder;
     }
 
-    pub fn configure(
-        &mut self,
-        mode: IndicatorMode,
-        duration_ms: u64,
-        points: u32,
-        on_caret: bool,
-    ) {
-        let resized = points != self.points;
-        self.mode = mode;
-        self.duration_ms = duration_ms;
-        self.points = points;
-        self.on_caret = on_caret;
-        if mode != IndicatorMode::Always {
+    pub fn configure(&mut self, config: Config) {
+        let look_changed = config.points != self.config.points
+            || config.colors != self.config.colors
+            || config.duration_ms != self.config.duration_ms;
+        self.config = config;
+        self.refresh_paint();
+        if self.config.mode != IndicatorMode::Always {
             self.hide();
         }
-        // A new size is shown at once, beside the pointer (on the slider),
-        // so it can be judged while being chosen.
-        if resized && mode != IndicatorMode::Off && !self.letters.is_empty() {
-            self.hide_at = Some(now() + self.duration_ms.max(1000));
-            self.show_at(None);
+        // A new look is shown at once, beside the pointer (on the control
+        // that set it), so it can be judged while being chosen.
+        if look_changed {
+            self.preview();
         }
     }
 
+    /// The badge beside the pointer for a moment (the window's "Show"
+    /// button, a changed look), whatever the mode but off.
+    pub fn preview(&mut self) {
+        if self.config.mode == IndicatorMode::Off || self.letters.is_empty() {
+            return;
+        }
+        self.hide_at = Some(now() + self.config.duration_ms.max(1000));
+        self.show_at(None);
+    }
+
     /// The layout changed: the badge shows its letters (for a moment, or
-    /// from now on); `flash` is false for the first layout seen at start.
-    pub fn set_letters(&mut self, letters: &str, flash: bool) {
+    /// from now on); `index` is its place in the pair; `flash` is false
+    /// for the first layout seen at start.
+    pub fn set_letters(&mut self, letters: &str, index: Option<u8>, flash: bool) {
         self.letters = letters.to_owned();
-        PAINT.with_borrow_mut(|p| {
-            p.letters = letters.encode_utf16().collect();
-            p.light = crate::tray::taskbar_is_light();
-        });
-        match self.mode {
+        self.index = index;
+        self.refresh_paint();
+        match self.config.mode {
             IndicatorMode::Off => {}
             IndicatorMode::OnSwitch if flash => {
-                self.hide_at = Some(now() + self.duration_ms);
+                self.hide_at = Some(now() + self.config.duration_ms);
                 self.show();
             }
             IndicatorMode::OnSwitch => {}
@@ -210,11 +236,28 @@ impl Indicator {
         }
     }
 
+    /// What the window procedure paints: the letters, the colour of the
+    /// layout (or the taskbar's shade).
+    fn refresh_paint(&self) {
+        let color = match (self.config.colors, self.index) {
+            (Some(colors), Some(i)) => {
+                let [r, g, b] = colors[i as usize];
+                Some(u32::from(r) | u32::from(g) << 8 | u32::from(b) << 16)
+            }
+            _ => None,
+        };
+        PAINT.with_borrow_mut(|p| {
+            p.letters = self.letters.encode_utf16().collect();
+            p.light = crate::tray::taskbar_is_light();
+            p.color = color;
+        });
+    }
+
     /// The caret of the window in front moved to `rect` (screen pixels).
     pub fn caret_moved(&mut self, rect: RECT) {
         let moved = !self.caret.is_some_and(|c| same(c, rect));
         self.caret = Some(rect);
-        if moved && (self.mode == IndicatorMode::Always || self.visible) {
+        if moved && (self.config.mode == IndicatorMode::Always || self.visible) {
             self.show();
         }
     }
@@ -223,7 +266,7 @@ impl Indicator {
     /// accessibility is on): the caret thread is asked anew when the badge
     /// follows the caret.
     pub fn caret_moved_elsewhere(&mut self) {
-        if self.mode == IndicatorMode::Always || self.visible {
+        if self.config.mode == IndicatorMode::Always || self.visible {
             self.ask(false);
         }
     }
@@ -247,7 +290,10 @@ impl Indicator {
     /// moved, another window in front. It is looked for a moment later
     /// ([`PLACED_TIMER`]), and the badge flashes there.
     pub fn caret_placed(&mut self, click: bool) {
-        if self.mode != IndicatorMode::OnSwitch || !self.on_caret || self.letters.is_empty() {
+        if self.config.mode != IndicatorMode::OnSwitch
+            || !self.config.on_caret
+            || self.letters.is_empty()
+        {
             return;
         }
         let placed = match self.placed {
@@ -285,14 +331,14 @@ impl Indicator {
 
     /// The badge at `caret` for a moment.
     fn flash_at(&mut self, caret: RECT) {
-        self.hide_at = Some(now() + self.duration_ms);
+        self.hide_at = Some(now() + self.config.duration_ms);
         self.show_at(Some(caret));
     }
 
     /// Another window is in front: its caret is not known yet.
     pub fn foreground_changed(&mut self) {
         self.caret = None;
-        if self.mode == IndicatorMode::Always {
+        if self.config.mode == IndicatorMode::Always {
             self.hide();
         }
     }
@@ -374,15 +420,16 @@ impl Indicator {
             let scale = dpi as f32 / 96.0;
             // Paddings and the corners grow with the letters: at 10 pt and
             // 96 dpi, 5 px at the sides, 2 px above and below, 6 px corners.
-            let em = self.points as f32 * scale / 10.0;
-            if self.font_for != (dpi, self.points) {
+            let points = self.config.points;
+            let em = points as f32 * scale / 10.0;
+            if self.font_for != (dpi, points) {
                 let old = PAINT.with_borrow(|p| p.font);
                 if old != 0 {
                     DeleteObject(old as _);
                 }
                 let face = crate::win::wide("Segoe UI");
                 let font = CreateFontW(
-                    -(self.points as i32 * dpi as i32 / 72),
+                    -(points as i32 * dpi as i32 / 72),
                     0,
                     0,
                     0,
@@ -398,7 +445,7 @@ impl Indicator {
                     face.as_ptr(),
                 );
                 PAINT.with_borrow_mut(|p| p.font = font as isize);
-                self.font_for = (dpi, self.points);
+                self.font_for = (dpi, points);
             }
             // The letters' size.
             let dc = CreateCompatibleDC(std::ptr::null_mut());
@@ -517,6 +564,12 @@ pub fn caret_of_thread(thread: u32) -> Option<RECT> {
     })
 }
 
+/// `color` (a `COLORREF`) at three quarters of its brightness.
+fn darker(color: u32) -> u32 {
+    let channel = |shift: u32| (((color >> shift) & 0xFF) * 3 / 4) << shift;
+    channel(0) | channel(8) | channel(16)
+}
+
 fn same(a: RECT, b: RECT) -> bool {
     a.left == b.left && a.top == b.top && a.right == b.right && a.bottom == b.bottom
 }
@@ -557,10 +610,11 @@ unsafe extern "system" fn window_proc(
         let mut ps: PAINTSTRUCT = std::mem::zeroed();
         let dc = BeginPaint(hwnd, &mut ps);
         PAINT.with_borrow(|p| {
-            let (bg, border, text) = if p.light {
-                (0x00F3_F3F3u32, 0x00B8_B8B8u32, 0x001A_1A1Au32)
-            } else {
-                (0x002D_2D2Du32, 0x0058_5858u32, 0x00F5_F5F5u32)
+            let (bg, border, text) = match p.color {
+                // The layout's colour, a darker border, white letters.
+                Some(c) => (c, darker(c), 0x00FF_FFFFu32),
+                None if p.light => (0x00F3_F3F3u32, 0x00B8_B8B8u32, 0x001A_1A1Au32),
+                None => (0x002D_2D2Du32, 0x0058_5858u32, 0x00F5_F5F5u32),
             };
             let brush = CreateSolidBrush(bg);
             FillRect(dc, &ps.rcPaint, brush);
