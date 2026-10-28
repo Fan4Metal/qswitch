@@ -15,34 +15,47 @@ use crate::settings::{
 /// Width of the combo boxes.
 const COMBO: f32 = 260.0;
 
+/// The green of the "working" light.
+const WORKING: egui::Color32 = egui::Color32::from_rgb(0x3C, 0xB4, 0x4B);
+
 pub fn status(app: &mut App, ui: &mut Ui) {
-    ui.add_space(4.0);
+    ui.add_space(6.0);
+    let (error, warn) = (ui.visuals().error_fg_color, ui.visuals().warn_fg_color);
     match app.hooks {
-        Some(false) => {
-            ui.colored_label(
-                ui.visuals().error_fg_color,
-                tr!(
-                    "The keyboard hook could not be set: the program sees no keys.",
-                    "Не удалось установить перехват клавиатуры: программа не видит клавиш."
-                ),
-            );
-        }
-        _ if crate::hook::paused() => {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                tr!(
-                    "Paused: every key goes through untouched.",
-                    "Пауза: все клавиши проходят как есть."
-                ),
-            );
-        }
+        Some(false) => light(
+            ui,
+            error,
+            tr!("No keyboard hook", "Нет перехвата клавиатуры"),
+            tr!(
+                "The hook could not be set: the program sees no keys.",
+                "Перехват не установлен: программа не видит клавиш."
+            ),
+        ),
+        _ if crate::hook::paused() => light(
+            ui,
+            warn,
+            tr!("Paused", "Пауза"),
+            tr!(
+                "Every key goes through untouched.",
+                "Все клавиши проходят как есть."
+            ),
+        ),
         _ => {
-            ui.label(tr!("Working.", "Работает."));
+            let how = match app.settings.trigger {
+                Trigger::Off => tr!("the gesture is off", "жест выключен").to_owned(),
+                t => tr!(
+                    format!("{} converts the last word", trigger_label(t)),
+                    format!("{} переводит последнее слово", trigger_label(t))
+                ),
+            };
+            light(ui, WORKING, tr!("Working", "Работает"), &how)
         }
     }
     if app.layouts.len() < 2 {
-        ui.colored_label(
-            ui.visuals().warn_fg_color,
+        light(
+            ui,
+            warn,
+            tr!("One layout", "Одна раскладка"),
             tr!(
                 "Only one keyboard layout is installed: there is nothing to switch between.",
                 "Установлена только одна раскладка: переключать не между чем."
@@ -516,6 +529,19 @@ fn add_rule(app: &mut App, exe: String) {
     app.settings.rules.push(Rule {
         exe: file_name(&exe).to_owned(),
         mode: RuleMode::Off,
+    });
+}
+
+/// A line of the state: a round light in `color`, `title` in bold, `detail`
+/// in grey after it.
+fn light(ui: &mut Ui, color: egui::Color32, title: &str, detail: &str) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 18.0), egui::Sense::hover());
+        ui.painter().circle_filled(rect.center(), 5.0, color);
+        ui.add_space(2.0);
+        ui.label(egui::RichText::new(title).strong().size(16.0));
+        ui.add_space(4.0);
+        ui.weak(detail);
     });
 }
 
