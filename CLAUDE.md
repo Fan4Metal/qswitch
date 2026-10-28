@@ -22,6 +22,7 @@ python tools/make_release.py --no-tests --install   # the same, then installs it
 set RUST_LOG=debug               # env_logger; the debug build has a console
 set QSWITCH_TRACE=1              # the key trace (the Status page's check box) on from the start, to trace.log next to the settings
 cargo run --example typing       # does an egui field take what the hook injects (Backspaces, Unicode text, a layout request)
+cargo run --example selection [seconds]   # what UI Automation says of the focused element and its selection, printed when it changes: why the gesture does nothing with a selection in some program (VS Code's editor exposes none until its screen reader mode is on)
 python tools/make_ngrams.py      # rebuilds data/ngrams_{en,ru}.bin (the automatic switch's trigram tables) from vendor/ngrams (downloaded when missing) and prints the calibration; --check: the calibration only
 ```
 
