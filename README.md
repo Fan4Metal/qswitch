@@ -64,7 +64,7 @@ The Status page has a field to try the gesture in: a word typed there in the wro
 <details>
 <summary>Selected text, and the gesture with nothing typed</summary>
 
-With nothing typed yet, the gesture converts the selected text, if there is one: the selection is read through UI Automation, converted character by character (each goes to the other layout of the pair) and typed over the selection, and the window is switched to the layout of the result. With no selection either, the gesture only switches the layout. Programs that do not expose their text (and terminals, where typing does not replace a selection) get the layout switch alone.
+With nothing typed yet, the gesture converts the selected text, if there is one: the selection is read through UI Automation, converted character by character (each goes to the other layout of the pair) and typed over the selection, and the window is switched to the layout of the result. With no selection either, the gesture only switches the layout. Programs that do not expose their text (and terminals, where typing does not replace a selection) get the layout switch alone. The editor of VS Code exposes its text only in its screen reader mode: with `"editor.accessibilitySupport": "on"` in its settings (or Shift+Alt+F1) the selection is converted there too.
 
 </details>
 
