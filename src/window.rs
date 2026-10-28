@@ -82,6 +82,9 @@ pub fn keep_hidden() {
 
 /// Whether the program is paused, for the menu's label.
 static PAUSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The automatic switch, for the menu's check mark: 0 not available for
+/// the pair, 1 off, 2 on.
+static AUTO: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 /// Subclass the window once; `wake` is called when something is queued.
 pub fn hook_window(hwnd: isize, wake: impl Fn() + Send + Sync + 'static) {
@@ -142,6 +145,17 @@ pub fn hook(what: Hooked) {
 /// Tell the menu whether the program is paused.
 pub fn set_paused(paused: bool) {
     PAUSED.store(paused, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Tell the menu whether the automatic switch is on (`None`: not
+/// available for the pair of layouts).
+pub fn set_auto(auto: Option<bool>) {
+    let value = match auto {
+        None => 0,
+        Some(false) => 1,
+        Some(true) => 2,
+    };
+    AUTO.store(value, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Whether this process runs elevated (as administrator).
@@ -249,7 +263,12 @@ unsafe extern "system" fn window_proc(
                 let x = (wparam & 0xFFFF) as u16 as i16 as i32;
                 let y = ((wparam >> 16) & 0xFFFF) as u16 as i16 as i32;
                 let paused = PAUSED.load(std::sync::atomic::Ordering::Relaxed);
-                match crate::tray::menu(hwnd as isize, x, y, paused) {
+                let auto = match AUTO.load(std::sync::atomic::Ordering::Relaxed) {
+                    0 => None,
+                    1 => Some(false),
+                    _ => Some(true),
+                };
+                match crate::tray::menu(hwnd as isize, x, y, paused, auto) {
                     Some(TrayCmd::Show) => {
                         bring_back(hwnd as isize);
                         hook(Hooked::Tray(TrayCmd::Show));

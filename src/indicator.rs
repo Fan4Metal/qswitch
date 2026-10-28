@@ -120,7 +120,7 @@ pub struct Indicator {
     /// The DPI and the point size the font was made for.
     font_for: (u32, u32),
     /// The caret thread ([`crate::caret::spawn`]).
-    finder: Option<Sender<(u64, bool)>>,
+    finder: Option<Sender<crate::caret::Ask>>,
     /// The question to it the badge waits for.
     asked: Option<Asked>,
     /// A caret placed, looked for when [`PLACED_TIMER`] fires.
@@ -188,7 +188,7 @@ impl Indicator {
     }
 
     /// The thread that finds a caret that is not a Win32 one.
-    pub fn set_finder(&mut self, finder: Option<Sender<(u64, bool)>>) {
+    pub fn set_finder(&mut self, finder: Option<Sender<crate::caret::Ask>>) {
         self.finder = finder;
     }
 
@@ -408,7 +408,11 @@ impl Indicator {
     fn ask(&mut self, placed: bool) {
         let sent = self.finder.as_ref().map(|f| {
             self.questions += 1;
-            f.send((self.questions, placed)).is_ok()
+            f.send(crate::caret::Ask::Caret {
+                id: self.questions,
+                strict: placed,
+            })
+            .is_ok()
         });
         if sent == Some(true) {
             self.asked = Some(Asked {

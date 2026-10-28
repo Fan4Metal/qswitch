@@ -36,6 +36,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     WM_RBUTTONDOWN, WM_SYSKEYDOWN, WM_TIMER, WM_XBUTTONDOWN,
 };
 
+use crate::caret::{Answer, Ask};
 use crate::engine::{Effect, Engine, Key};
 use crate::layout::{self, Hkl, Table};
 use crate::settings::{Rule, RuleMode, rule_for};
@@ -86,6 +87,10 @@ const WM_TOGGLE: u32 = WM_APP + 3;
 const WM_CARET: u32 = WM_APP + 4;
 /// The window asks to see the badge (beside the pointer).
 const WM_PREVIEW: u32 = WM_APP + 5;
+/// The caret thread answered whether the focused element takes a
+/// password (`PASSWORD`).
+const WM_PASSWORD: u32 = WM_APP + 6;
+static PASSWORD: AtomicBool = AtomicBool::new(false);
 /// How often the layout is looked at (it changes by Alt+Shift too).
 const POLL_MS: u32 = 150;
 
@@ -123,6 +128,13 @@ struct State {
     rules: Vec<Rule>,
     layouts: Vec<(Hkl, String)>,
     indicator: Option<crate::indicator::Indicator>,
+    /// The caret thread (`caret.rs`): the badge's caret, the password
+    /// question.
+    finder: Option<Sender<Ask>>,
+    /// The focus control is a classic password edit (`ES_PASSWORD`).
+    classic_password: bool,
+    /// UI Automation says the focused element takes a password.
+    uia_password: bool,
     /// Shift is held (followed here for the character tables).
     shift: bool,
     /// The foreground program's exe (a full path) and its rule.
@@ -262,6 +274,18 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
         rules: Vec::new(),
         layouts: Vec::new(),
         indicator: crate::indicator::Indicator::new(),
+        finder: crate::caret::spawn(|answer| match answer {
+            Answer::Caret { id, place } => {
+                *CARET_ANSWER.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, place));
+                post(WM_CARET);
+            }
+            Answer::Password(password) => {
+                PASSWORD.store(password, Ordering::Relaxed);
+                post(WM_PASSWORD);
+            }
+        }),
+        classic_password: false,
+        uia_password: false,
         shift: false,
         exe: String::new(),
         mode: None,
@@ -272,10 +296,7 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
         ctx,
     };
     if let Some(indicator) = &mut state.indicator {
-        indicator.set_finder(crate::caret::spawn(|id, caret| {
-            *CARET_ANSWER.lock().unwrap_or_else(|e| e.into_inner()) = Some((id, caret));
-            post(WM_CARET);
-        }));
+        indicator.set_finder(state.finder.clone());
     }
     state.apply(setup);
     state.foreground_changed(unsafe { GetForegroundWindow() } as isize);
@@ -366,6 +387,13 @@ fn run(events: Sender<Event>, ctx: egui::Context) {
                     }
                 });
             }
+            WM_PASSWORD => {
+                let password = PASSWORD.load(Ordering::Relaxed);
+                with_state(|s| {
+                    s.uia_password = password;
+                    s.follow_mode();
+                });
+            }
             WM_CARET => {
                 let answer = CARET_ANSWER
                     .lock()
@@ -441,6 +469,29 @@ impl State {
     fn follow_mode(&mut self) {
         self.engine
             .set_enabled(!paused() && self.mode != Some(RuleMode::Off));
+        // No automatic conversion of a password (a classic password edit,
+        // or what UI Automation says of the focused element), nor in a
+        // terminal (a password typed there shows nothing).
+        self.engine.set_auto_blocked(
+            self.classic_password
+                || self.uia_password
+                || crate::selection::is_terminal(&self.exe),
+        );
+    }
+
+    /// The focus moved: is it in a password field? The classic style is
+    /// known at once; UI Automation answers later (`WM_PASSWORD`).
+    fn check_password(&mut self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GWL_STYLE, GetWindowLongW};
+        const ES_PASSWORD: u32 = 0x0020;
+        let focus = layout::target_window().unwrap_or(0);
+        self.classic_password = focus != 0
+            && class_of(focus) == "Edit"
+            && unsafe { GetWindowLongW(focus as _, GWL_STYLE) } as u32 & ES_PASSWORD != 0;
+        // Until the answer, the last one stands.
+        if let Some(finder) = &self.finder {
+            let _ = finder.send(Ask::Password);
+        }
     }
 
     fn index_of(&self, hkl: Hkl) -> Option<u8> {
@@ -679,6 +730,7 @@ impl State {
             indicator.foreground_changed();
             indicator.caret_placed(false);
         }
+        self.check_password();
         let exe = process_name(hwnd).unwrap_or_default();
         if tracing() {
             self.send(Event::Trace(format!(
@@ -972,6 +1024,8 @@ unsafe extern "system" fn win_event_proc(
                 }
                 s.engine.reset();
                 s.poll_layout();
+                s.check_password();
+                s.follow_mode();
                 if let Some(indicator) = &mut s.indicator {
                     indicator.caret_placed(false);
                 }

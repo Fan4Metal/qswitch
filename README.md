@@ -25,8 +25,9 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 
 - **Two taps of Shift**: the last word is converted into the other layout and the layout is switched (see [The gesture](#the-gesture)). The same gesture repeated puts the word back, and the layout too.
 - **Selected text**: with nothing typed, the gesture converts the selection instead, in any program that exposes its text to UI Automation (editors, browsers, Office, messengers).
+- **Automatic switching**, optional: a word typed in the wrong layout is converted by itself at the space after it; the letter statistics of the two languages decide, and a wrong guess is undone with the gesture (see [Automatic switching](#automatic-switching)).
 - **Caps Lock as the layout switch**: optional; Shift+Caps Lock stays the real Caps Lock.
-- **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, grey while paused.
+- **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, on a blue square while the automatic switch is on, grey while paused.
 - **A badge near the caret**: the layout's letters appear under the caret for a moment whenever the layout changes, or stay beside it as it moves, in a size and a colour of choice (see [The badge near the caret](#the-badge-near-the-caret)).
 - **Rules per program**: do nothing in games and remote desktops, start a program in a given layout (see [Programs](#programs)).
 - **Any pair of installed layouts**, not only English and Russian.
@@ -74,6 +75,19 @@ The conversion is done by erasing characters before the caret with Backspace and
 
 </details>
 
+## Automatic switching
+
+Off until turned on (the **Auto** button in the toolbar, or the Settings page), the automatic switch converts a word typed in the wrong layout at the space after it, as the gesture would, and switches the layout: `ghbdtn ` becomes `привет `, `руддщ ` becomes `hello `. A wrong guess is undone with the gesture, and that word is then left alone until the program restarts. The **Confidence** setting trades the words caught for the rare wrong guess: cautious, normal (the default) or bold. It works for a pair of English and Russian layouts.
+
+<details>
+<summary>How it decides, and what it leaves alone</summary>
+
+Each language has a table of the cost of every three-letter combination, built from a word frequency list (`tools/make_ngrams.py`) and embedded in the program (60 KB for both). A word is read in the layout it was typed in and in the other one; when the reading in the other layout costs much less and is a plausible word by itself, the word is converted. On words the tables have not seen, the bold setting catches 95 % of the words typed in the wrong layout and misfires on 0.04 % of the words typed right; the cautious one catches about 70 % and misfires on none.
+
+Nothing is converted in password fields (a classic password edit, or an element UI Automation reports as a password) and in terminals, where a password typed shows nothing. Words shorter than three letters, words with digits or with the signs of a path, an address or code (`/ \ @ : # & = % + _ ~ ^ | < > ( ) [ ] { } * $`), and words already flipped by the gesture are left alone, and so are the words put back with the gesture (kept in memory only). The word before Enter is not checked: in a chat, Enter sends it.
+
+</details>
+
 ## The badge near the caret
 
 When the layout changes, by the gesture or by Alt+Shift, a small badge with the layout's letters appears under the caret of the window in front and goes after 0.7 s, so the layout is seen where the eyes are, not in the corner of the screen. The Settings page offers three modes: off, for a moment when the layout changes (the default, with the time it stays), or always, following the caret. The badge takes no focus and lets clicks through.
@@ -107,7 +121,7 @@ The list under the rules offers the programs that have a window on the screen no
 
 ## Pause and the notification area
 
-A click on the icon only switches the layout of the window that was in front, and the focus stays where it is; qswitch's own window opens from the icon's menu, which has **Show**, **Pause** (every key goes through untouched, the icon turns grey) and **Exit**. The window's close button and the Esc key hide it to the notification area (a setting on the Settings page); the program is ended from the icon's menu.
+A click on the icon only switches the layout of the window that was in front, and the focus stays where it is; qswitch's own window opens from the icon's menu, which has **Show**, **Pause** (every key goes through untouched, the icon turns grey), **Automatic switching** (a check mark while it is on) and **Exit**. The window's close button and the Esc key hide it to the notification area (a setting on the Settings page); the program is ended from the icon's menu.
 
 <details>
 <summary>The command line</summary>
@@ -191,6 +205,7 @@ qswitch is built on the following open-source projects:
 
 - [egui / eframe](https://github.com/emilk/egui): the user interface and the window;
 - [serde](https://serde.rs/) and [serde_json](https://github.com/serde-rs/json): the settings file;
+- [FrequencyWords](https://github.com/hermitdave/FrequencyWords) (word frequency lists from OpenSubtitles, CC BY-SA 4.0): the letter statistics of the automatic switch are built from them;
 - [Inno Setup](https://jrsoftware.org/isinfo.php): the installer.
 
 ## License

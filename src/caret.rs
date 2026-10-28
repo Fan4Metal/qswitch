@@ -24,23 +24,57 @@ use windows_sys::Win32::Foundation::RECT;
 /// How long a call into the other program may take.
 const TIMEOUT_MS: u32 = 300;
 
-/// Start the thread that answers where the caret is: each question sent
-/// (a number, and whether it is `strict`) is answered with
-/// `answer(number, place)` (only the latest of several sent at once). UI Automation is made at the first question, so a badge
-/// that is off costs nothing. `None` when the thread could not be started.
-pub fn spawn(answer: impl Fn(u64, Option<RECT>) + Send + 'static) -> Option<Sender<(u64, bool)>> {
-    let (requests, received) = channel::<(u64, bool)>();
+/// A question to the thread.
+#[derive(Clone, Copy, Debug)]
+pub enum Ask {
+    /// Where the caret is; `strict`: only in an element that takes text.
+    Caret { id: u64, strict: bool },
+    /// Whether the focused element takes a password (the automatic switch
+    /// keeps off such a field).
+    Password,
+}
+
+/// The thread's answer.
+#[derive(Clone, Copy)]
+pub enum Answer {
+    Caret { id: u64, place: Option<RECT> },
+    Password(bool),
+}
+
+/// Start the thread that answers the questions: a caret question is
+/// answered with its number and the place (only the latest of several
+/// sent at once), a password question with whether the focused element
+/// takes a password. UI Automation is made at the first question, so a
+/// badge that is off costs nothing. `None` when the thread could not be
+/// started.
+pub fn spawn(answer: impl Fn(Answer) + Send + 'static) -> Option<Sender<Ask>> {
+    let (requests, received) = channel::<Ask>();
     std::thread::Builder::new()
         .name("caret".into())
         .spawn(move || {
             let mut finder = None;
-            while let Ok(mut question) = received.recv() {
-                while let Ok(later) = received.try_recv() {
-                    question = later;
+            while let Ok(first) = received.recv() {
+                // Of the questions waiting, the latest of each kind.
+                let mut caret = None;
+                let mut password = false;
+                for question in std::iter::once(first).chain(received.try_iter()) {
+                    match question {
+                        Ask::Caret { id, strict } => caret = Some((id, strict)),
+                        Ask::Password => password = true,
+                    }
                 }
-                let (id, strict) = question;
                 let finder = finder.get_or_insert_with(Finder::new);
-                answer(id, finder.as_ref().and_then(|f| f.caret(strict)));
+                if password {
+                    answer(Answer::Password(
+                        finder.as_ref().is_some_and(Finder::password_focused),
+                    ));
+                }
+                if let Some((id, strict)) = caret {
+                    answer(Answer::Caret {
+                        id,
+                        place: finder.as_ref().and_then(|f| f.caret(strict)),
+                    });
+                }
             }
         })
         .ok()?;
@@ -74,6 +108,18 @@ impl Finder {
     /// that takes text.
     pub fn caret(&self, strict: bool) -> Option<RECT> {
         msaa_caret().or_else(|| self.uia_caret(strict))
+    }
+
+    /// Whether the focused element takes a password (`IsPassword`: a
+    /// browser's password field, a dialog's).
+    pub fn password_focused(&self) -> bool {
+        // SAFETY: the interface comes from a successful call.
+        unsafe {
+            self.automation
+                .GetFocusedElement()
+                .and_then(|e| e.CurrentIsPassword())
+                .is_ok_and(|b| b.as_bool())
+        }
     }
 
     pub fn uia_caret(&self, strict: bool) -> Option<RECT> {

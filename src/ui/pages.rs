@@ -8,6 +8,7 @@ use egui::Ui;
 
 use crate::app::App;
 use crate::engine::Trigger;
+use crate::lang::Confidence;
 use crate::settings::{
     INDICATOR_SIZES, IndicatorMode, Rule, RuleMode, color_of, file_name, hex_of,
 };
@@ -255,6 +256,52 @@ pub fn settings(app: &mut App, ui: &mut Ui) {
             "Caps Lock переключает раскладку (Shift+Caps Lock — обычный Caps Lock)"
         ),
     );
+    ui.add_space(12.0);
+    ui.strong(tr!("Automatic switching", "Автопереключение"));
+    ui.add_space(4.0);
+    let supported = crate::app::langs_of(app.pair).iter().all(Option::is_some);
+    ui.add_enabled_ui(supported, |ui| {
+        ui.checkbox(
+            &mut app.settings.auto_switch,
+            tr!(
+                "Convert a word typed in the wrong layout by itself, at the space after it",
+                "Переводить слово, набранное не в той раскладке, самостоятельно, по пробелу после него"
+            ),
+        );
+        if app.settings.auto_switch {
+            egui::Grid::new("auto")
+                .num_columns(2)
+                .spacing([16.0, 8.0])
+                .show(ui, |ui| {
+                    ui.label(tr!("Confidence", "Уверенность"));
+                    egui::ComboBox::from_id_salt("confidence")
+                        .width(COMBO)
+                        .selected_text(confidence_label(app.settings.auto_confidence))
+                        .show_ui(ui, |ui| {
+                            for c in Confidence::ALL {
+                                ui.selectable_value(
+                                    &mut app.settings.auto_confidence,
+                                    c,
+                                    confidence_label(c),
+                                );
+                            }
+                        });
+                    ui.end_row();
+                });
+            ui.weak(tr!(
+                "A wrong guess is undone with the gesture, and that word is left alone until the program restarts. \
+                 Nothing is converted in password fields and terminals, nor words with digits or the signs of a path or an address.",
+                "Ошибочную замену отменяет жест, и это слово больше не трогается до перезапуска программы. \
+                 В полях паролей и терминалах, а также слова с цифрами или знаками пути и адреса не переводятся."
+            ));
+        }
+    });
+    if !supported {
+        ui.weak(tr!(
+            "For a pair of English and Russian layouts only.",
+            "Только для пары английской и русской раскладок."
+        ));
+    }
     ui.add_space(12.0);
     ui.strong(tr!("Indication", "Индикация"));
     ui.add_space(4.0);
@@ -599,6 +646,21 @@ fn gesture_hint(t: Trigger) -> &'static str {
         Trigger::Pause => tr!("press Pause", "нажмите Pause"),
         Trigger::Off => "",
     }
+}
+
+fn confidence_label(c: Confidence) -> String {
+    match c {
+        Confidence::Cautious => tr!(
+            "Cautious: only words the language cannot have",
+            "Осторожно: только слова, невозможные в языке"
+        ),
+        Confidence::Normal => tr!("Normal", "Обычно"),
+        Confidence::Bold => tr!(
+            "Bold: most wrong words, a rare mistake",
+            "Смело: почти все, изредка ошибка"
+        ),
+    }
+    .to_owned()
 }
 
 fn trigger_label(t: Trigger) -> String {

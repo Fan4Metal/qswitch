@@ -147,6 +147,11 @@ pub struct Settings {
     pub keep_conversions: bool,
     /// The gesture that converts what was typed.
     pub trigger: Trigger,
+    /// A word typed in the wrong layout is converted by itself at the
+    /// space after it (`lang.rs`); off until turned on.
+    pub auto_switch: bool,
+    /// How sure the automatic switch must be.
+    pub auto_confidence: crate::lang::Confidence,
     /// Caps Lock switches the layout (Shift+Caps Lock is the real one).
     pub caps_lock_switch: bool,
     /// The badge near the caret.
@@ -186,6 +191,8 @@ impl Default for Settings {
             close_to_tray: true,
             keep_conversions: false,
             trigger: engine.trigger,
+            auto_switch: false,
+            auto_confidence: crate::lang::Confidence::Normal,
             caps_lock_switch: engine.caps_lock_switch,
             indicator: IndicatorMode::OnSwitch,
             indicator_ms: 700,
@@ -324,13 +331,22 @@ impl Settings {
         }
     }
 
-    /// The machine's part of the settings.
-    pub fn engine_config(&self) -> engine::Config {
+    /// The machine's part of the settings; `langs` are the languages of
+    /// the pair's layouts (the automatic switch needs both known).
+    pub fn engine_config(&self, langs: [Option<crate::lang::Lang>; 2]) -> engine::Config {
+        let auto = match langs {
+            [Some(a), Some(b)] if self.auto_switch => Some(engine::Auto {
+                langs: [a, b],
+                confidence: self.auto_confidence,
+            }),
+            _ => None,
+        };
         engine::Config {
             trigger: self.trigger,
             caps_lock_switch: self.caps_lock_switch,
             tap_ms: self.tap_ms,
             gap_ms: self.gap_ms,
+            auto,
         }
     }
 

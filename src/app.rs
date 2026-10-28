@@ -154,7 +154,7 @@ impl App {
         let layouts = layout::installed();
         let pair = pair_of(&settings, &layouts);
         let setup = hook::Setup {
-            config: settings.engine_config(),
+            config: settings.engine_config(langs_of(pair)),
             pair,
             rules: settings.rules.clone(),
             layouts: layouts.iter().map(|l| (l.hkl, l.code.clone())).collect(),
@@ -314,6 +314,9 @@ impl App {
             match hooked {
                 Hooked::Tray(TrayCmd::Show) | Hooked::Remote(Remote::Show) => self.show(ctx),
                 Hooked::Tray(TrayCmd::TogglePause) => self.set_paused(!hook::paused()),
+                Hooked::Tray(TrayCmd::ToggleAuto) => {
+                    self.settings.auto_switch = !self.settings.auto_switch;
+                }
                 Hooked::Tray(TrayCmd::Exit) | Hooked::Remote(Remote::Quit) | Hooked::CloseNow => {
                     self.quit()
                 }
@@ -387,7 +390,7 @@ impl App {
         }
         let pair = pair_of(&self.settings, &self.layouts);
         let setup = hook::Setup {
-            config: self.settings.engine_config(),
+            config: self.settings.engine_config(langs_of(pair)),
             pair,
             rules: self.settings.rules.clone(),
             layouts: self
@@ -408,6 +411,8 @@ impl App {
 
     /// The tray icon shows the layout the foreground window is in.
     fn follow_tray(&mut self) {
+        let supported = langs_of(self.pair).iter().all(Option::is_some);
+        window::set_auto(supported.then_some(self.settings.auto_switch));
         let Some(tray) = &mut self.tray else { return };
         let paused = hook::paused();
         let layout = self
@@ -422,7 +427,16 @@ impl App {
             (Some(l), false) => format!("{} — {}", crate::APP_NAME, l.name),
             (None, false) => crate::APP_NAME.to_owned(),
         };
-        tray.set(letters, paused, &tip);
+        let auto = supported && self.settings.auto_switch;
+        let tip = if auto && !paused {
+            tr!(
+                format!("{tip}, automatic switching"),
+                format!("{tip}, автопереключение")
+            )
+        } else {
+            tip
+        };
+        tray.set(letters, paused, auto, &tip);
     }
 
     /// Note where the window is, to be saved once it rests.
@@ -478,6 +492,35 @@ impl App {
                 .clicked()
             {
                 self.set_paused(!paused);
+            }
+            // The automatic switch, on and off with one click.
+            let supported = langs_of(self.pair).iter().all(Option::is_some);
+            let auto = self.settings.auto_switch;
+            let tip = if !supported {
+                tr!(
+                    "Automatic switching: for a pair of English and Russian layouts only",
+                    "Автопереключение: только для пары английской и русской раскладок"
+                )
+            } else if auto {
+                tr!(
+                    "Automatic switching is on: a word typed in the wrong layout is converted at the space after it (click: off)",
+                    "Автопереключение включено: слово не в той раскладке переводится по пробелу после него (щелчок: выключить)"
+                )
+            } else {
+                tr!(
+                    "Automatic switching is off (click: on)",
+                    "Автопереключение выключено (щелчок: включить)"
+                )
+            };
+            if ui
+                .add_enabled(
+                    supported,
+                    egui::Button::selectable(auto, tr!("Auto", "Авто")),
+                )
+                .on_hover_text(tip)
+                .clicked()
+            {
+                self.settings.auto_switch = !auto;
             }
             // What keeps or writes what was typed is said in red while it
             // is on, whatever page is shown; a click goes to its check box
@@ -561,6 +604,11 @@ pub fn pair_of(settings: &Settings, layouts: &[Layout]) -> [Hkl; 2] {
     let first = layouts.first().map_or(0, |l| l.hkl);
     let second = layouts.get(1).map_or(first, |l| l.hkl);
     [first, second]
+}
+
+/// The language of each layout of the pair, for the automatic switch.
+pub fn langs_of(pair: [Hkl; 2]) -> [Option<crate::lang::Lang>; 2] {
+    pair.map(|hkl| crate::lang::Lang::of_hkl(hkl as usize))
 }
 
 impl eframe::App for App {

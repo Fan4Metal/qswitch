@@ -84,6 +84,9 @@ pub struct Config {
     /// Two taps make the gesture when the second starts within this of
     /// the first's release.
     pub gap_ms: u64,
+    /// The automatic switch; `None`: off, or a pair with a language the
+    /// program has no table for.
+    pub auto: Option<Auto>,
 }
 
 impl Default for Config {
@@ -93,9 +96,27 @@ impl Default for Config {
             caps_lock_switch: false,
             tap_ms: 250,
             gap_ms: 350,
+            auto: None,
         }
     }
 }
+
+/// The automatic switch: a word typed in the wrong layout is converted at
+/// the space after it, as the gesture would (`lang::wrong_layout` decides).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Auto {
+    /// The language of each layout of the pair.
+    pub langs: [crate::lang::Lang; 2],
+    pub confidence: crate::lang::Confidence,
+}
+
+/// Characters a word is left alone for: a path, an address, code.
+const NOT_A_WORD: &str = "/\\@:#&=%+_~^|<>{}()[]*$`\"";
+/// Words shorter than this are not judged: too little to go by.
+const MIN_AUTO_LEN: usize = 3;
+/// Words the user put back after an automatic conversion are not
+/// converted again; this many are remembered (in memory only).
+const MAX_EXCEPTIONS: usize = 1000;
 
 /// A key as the hook saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -145,6 +166,9 @@ struct Typed {
     typed: u8,
     /// The layout its character is shown in now.
     shown: u8,
+    /// Flipped by the automatic switch (so the gesture putting it back
+    /// is a correction to remember).
+    auto: bool,
 }
 
 impl Typed {
@@ -186,6 +210,11 @@ pub struct Engine {
     tap: Option<Tap>,
     /// The first of two taps, finished, waiting for the second.
     first_tap_up: Option<(u16, u64)>,
+    /// The automatic switch holds off: a password field, a terminal.
+    auto_blocked: bool,
+    /// Words (as typed, lower case) the user put back after an automatic
+    /// conversion: not converted again.
+    exceptions: Vec<String>,
 }
 
 impl Default for Engine {
@@ -203,7 +232,15 @@ impl Engine {
             held: Vec::new(),
             tap: None,
             first_tap_up: None,
+            auto_blocked: false,
+            exceptions: Vec::new(),
         }
+    }
+
+    /// The automatic switch holds off while this is set (a password
+    /// field, a terminal); the gesture still works.
+    pub fn set_auto_blocked(&mut self, blocked: bool) {
+        self.auto_blocked = blocked;
     }
 
     pub fn set_config(&mut self, config: Config) {
@@ -272,7 +309,7 @@ impl Engine {
             return verdict;
         }
         if key.down {
-            self.typed(key);
+            self.typed(key, &mut verdict);
         }
         verdict
     }
@@ -369,7 +406,7 @@ impl Engine {
     }
 
     /// A character key (or a control key) went down.
-    fn typed(&mut self, key: Key) {
+    fn typed(&mut self, key: Key, verdict: &mut Verdict) {
         if self.tap_keys().contains(&key.vk) {
             return;
         }
@@ -445,7 +482,71 @@ impl Engine {
             chars: key.chars,
             typed: layout,
             shown: layout,
+            auto: false,
         });
+        if key.chars[layout as usize] == Some(' ') {
+            self.auto_check(layout, verdict);
+        }
+    }
+
+    /// A space was typed: the word before it, if it reads as one typed in
+    /// the wrong layout, is converted as the gesture would convert it,
+    /// the space with it (it reaches the window before the replacement).
+    fn auto_check(&mut self, layout: u8, verdict: &mut Verdict) {
+        let Some(auto) = self.config.auto else {
+            return;
+        };
+        if self.auto_blocked {
+            return;
+        }
+        let other = 1 - layout;
+        let end = self.line.len() - 1;
+        let word_len = self
+            .line
+            .iter()
+            .rev()
+            .skip(1)
+            .take_while(|t| !t.is_space())
+            .count();
+        if word_len < MIN_AUTO_LEN {
+            return;
+        }
+        let start = end - word_len;
+        let word = self.line.range(start..end);
+        // Typed in this layout as it stands, nothing flipped, every key
+        // with a character in the other layout too.
+        if word.clone().any(|t| {
+            t.typed != layout || t.shown != layout || t.auto || t.chars[other as usize].is_none()
+        }) {
+            return;
+        }
+        let current: String = word.clone().map(|t| t.char_in(layout)).collect();
+        let other_text: String = word.map(|t| t.char_in(other)).collect();
+        if current
+            .chars()
+            .any(|c| c.is_ascii_digit() || NOT_A_WORD.contains(c))
+        {
+            return;
+        }
+        if self.exceptions.contains(&current.to_lowercase()) {
+            return;
+        }
+        if !crate::lang::wrong_layout(
+            &current,
+            &other_text,
+            auto.langs[layout as usize],
+            auto.langs[other as usize],
+            auto.confidence,
+        ) {
+            return;
+        }
+        let from = self.screen();
+        for t in self.line.range_mut(start..end) {
+            t.shown = other;
+            t.auto = true;
+        }
+        self.emit_difference(&from, verdict);
+        verdict.effects.push(Effect::SwitchLayout(other));
     }
 
     /// The gesture: flip the last word to the other layout; a word flipped
@@ -470,8 +571,21 @@ impl Engine {
         // The word is shown in one layout throughout (typed in one, flipped
         // as a whole), so the last key says where it stands.
         let to = 1 - self.line[start + word_len - 1].shown;
+        // An automatic conversion put back by hand: the word was right as
+        // typed, and is not to be converted again.
+        let word = self.line.range(start..start + word_len);
+        if word.clone().all(|t| t.auto && t.typed == to) {
+            let as_typed: String = word.map(|t| t.char_in(to)).collect::<String>().to_lowercase();
+            if !self.exceptions.contains(&as_typed) {
+                if self.exceptions.len() >= MAX_EXCEPTIONS {
+                    self.exceptions.remove(0);
+                }
+                self.exceptions.push(as_typed);
+            }
+        }
         for t in self.line.iter_mut().skip(start) {
             t.shown = to;
+            t.auto = false;
         }
         self.emit_difference(&from, verdict);
         verdict.effects.push(Effect::SwitchLayout(to));
@@ -522,14 +636,14 @@ mod tests {
             return [Some(' '), Some(' ')];
         }
         let lower = c.to_ascii_lowercase();
-        let i = EN
-            .find(lower)
-            .or_else(|| {
-                RU.chars()
-                    .position(|r| r == lower)
-                    .and_then(|p| EN.chars().nth(p).map(|e| EN.find(e).unwrap()))
-            })
-            .unwrap();
+        let Some(i) = EN.find(lower).or_else(|| {
+            RU.chars()
+                .position(|r| r == lower)
+                .and_then(|p| EN.chars().nth(p).map(|e| EN.find(e).unwrap()))
+        }) else {
+            // A digit, a sign: the same in both layouts.
+            return [Some(c), Some(c)];
+        };
         let (e, r) = (EN.chars().nth(i).unwrap(), RU.chars().nth(i).unwrap());
         if c.is_uppercase() {
             [
@@ -576,8 +690,9 @@ mod tests {
         }
 
         /// Type text with the keys of `layout` 0 (Latin letters name the
-        /// keys), each key 40 ms apart.
-        fn type_text(&mut self, text: &str) {
+        /// keys), each key 40 ms apart; the effects, in order.
+        fn type_text(&mut self, text: &str) -> Vec<Effect> {
+            let mut effects = Vec::new();
             for c in text.chars() {
                 let vk = if c == ' ' {
                     vk::SPACE
@@ -585,13 +700,14 @@ mod tests {
                     0x100 + c as u16
                 };
                 let chars = chars_of(c);
-                self.engine.key(Key {
+                let down = self.engine.key(Key {
                     vk,
                     down: true,
                     time: self.time,
                     chars,
                     layout: Some(self.layout),
                 });
+                effects.extend(down.effects);
                 self.engine.key(Key {
                     vk,
                     down: false,
@@ -601,6 +717,7 @@ mod tests {
                 });
                 self.time += 40;
             }
+            effects
         }
 
         fn wait(&mut self, ms: u64) {
@@ -940,5 +1057,78 @@ mod tests {
             t.type_text("ghbdtnrfr ");
         }
         assert_eq!(t.engine.line.len(), MAX_LINE);
+    }
+
+    fn auto_config() -> Config {
+        Config {
+            auto: Some(Auto {
+                langs: [crate::lang::Lang::En, crate::lang::Lang::Ru],
+                confidence: crate::lang::Confidence::Normal,
+            }),
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn a_word_typed_in_the_wrong_layout_is_converted_at_the_space() {
+        let mut t = Typer::new(auto_config());
+        assert!(replace(&t.type_text("ghbdtn")).is_none());
+        let effects = t.type_text(" ");
+        assert_eq!(replace(&effects), Some((7, "привет ".to_owned())));
+        assert!(effects.contains(&Effect::SwitchLayout(1)));
+        assert!(effects.contains(&Effect::Converted {
+            from: "ghbdtn".into(),
+            to: "привет".into()
+        }));
+        assert_eq!(t.engine.screen(), "привет ");
+        // And the other way round.
+        t.layout = 1;
+        let effects = t.type_text("зкштеа ");
+        assert_eq!(replace(&effects), Some((7, "printf ".to_owned())));
+        assert!(effects.contains(&Effect::SwitchLayout(0)));
+    }
+
+    #[test]
+    fn words_typed_right_short_ones_and_code_are_left_alone() {
+        let mut t = Typer::new(auto_config());
+        assert!(replace(&t.type_text("hello world ")).is_none());
+        assert!(replace(&t.type_text("gh ")).is_none());
+        assert!(replace(&t.type_text("ghb1 ")).is_none());
+        assert!(replace(&t.type_text("c/ghbdtn ")).is_none());
+        assert_eq!(t.engine.screen(), "hello world gh ghb1 c/ghbdtn ");
+        // Off: nothing is converted.
+        let mut t = Typer::new(Config::default());
+        assert!(replace(&t.type_text("ghbdtn ")).is_none());
+        // Blocked (a password field): nothing either.
+        let mut t = Typer::new(auto_config());
+        t.engine.set_auto_blocked(true);
+        assert!(replace(&t.type_text("ghbdtn ")).is_none());
+        t.engine.set_auto_blocked(false);
+        assert!(replace(&t.type_text("ghbdtn ")).is_some());
+    }
+
+    #[test]
+    fn the_gesture_puts_an_automatic_conversion_back_and_remembers_it() {
+        let mut t = Typer::new(auto_config());
+        t.type_text("ghbdtn ");
+        assert_eq!(t.engine.screen(), "привет ");
+        let effects = t.double_shift();
+        assert_eq!(replace(&effects), Some((7, "ghbdtn ".to_owned())));
+        assert!(effects.contains(&Effect::SwitchLayout(0)));
+        // The word is now an exception: typed again, it stays.
+        t.layout = 0;
+        assert!(replace(&t.type_text("Ghbdtn ")).is_none());
+        // Another word is still converted.
+        assert!(replace(&t.type_text("rfr ")).is_some());
+    }
+
+    #[test]
+    fn a_word_flipped_by_the_gesture_is_not_judged_again() {
+        let mut t = Typer::new(auto_config());
+        t.type_text("hello");
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "руддщ");
+        t.layout = 1;
+        assert!(replace(&t.type_text(" ")).is_none());
     }
 }
