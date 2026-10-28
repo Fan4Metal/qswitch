@@ -57,11 +57,11 @@ impl AboutDialog {
                 ui.heading(crate::APP_NAME);
                 ui.label(tr!(format!("Version {}", crate::VERSION), format!("Версия {}", crate::VERSION)));
                 ui.add_space(8.0);
-                // One sentence, the same as Cargo.toml's description and
-                // the README tagline; the Russian one is written by hand.
+                // A few words only (the gesture is explained on the
+                // Gestures page and in the README).
                 ui.label(tr!(
-                    "Fast keyboard layout switcher: double Shift converts what you have just typed into the other layout.",
-                    "Быстрый переключатель раскладки: двойной Shift переводит только что набранное в другую раскладку."
+                    "Fast keyboard layout switcher",
+                    "Быстрый переключатель раскладки клавиатуры"
                 ));
                 ui.add_space(8.0);
                 if !AUTHORS.is_empty() {
