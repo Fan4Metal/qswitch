@@ -19,8 +19,6 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 
 ![qswitch's Status page: the state, the layout and the program in front, a field to try the gesture in](images/screenshot.png)
 
-*Screenshot of version 0.1.1.*
-
 ## Features
 
 - **Two taps of Shift**: the last word is converted into the other layout and the layout is switched (see [The gesture](#the-gesture)). The same gesture repeated puts the word back, and the layout too.
