@@ -57,6 +57,8 @@ The program watches the keys typed since the caret last moved (a click, an arrow
 | The first | The last word is erased and typed again as the same keys read in the other layout; the window is switched to that layout. |
 | The second | The word is put back as it was typed, and the layout too. Each further repeat flips it again. |
 
+The word is what was typed since the last space. A sign that is a sign in both layouts (a slash, a bracket, a colon, an at sign) placed before the letters ends the word, since it was meant as typed: `word/ghbdtn` becomes `word/привет`, and the part before the slash stays. Signs after the letters were typed blind with the word and are converted with it: `ghbdtn/` becomes `привет.`. A hyphen and an underscore join the parts of a word (`rnj-yb,elm` becomes `кто-нибудь`), and so does a key that is a letter in one of the layouts (`'nj` becomes `это`).
+
 The Status page has a field to try the gesture in: a word typed there in the wrong layout is converted like anywhere else. Instead of two taps of Shift, the Settings page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher).
 
 <details>

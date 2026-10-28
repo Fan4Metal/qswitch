@@ -186,6 +186,18 @@ impl Typed {
     fn is_space(&self) -> bool {
         self.chars[self.typed as usize] == Some(' ')
     }
+
+    /// A sign in both layouts of the pair (a slash, a bracket, a colon),
+    /// so that it was meant as typed whatever the layout. A hyphen and an
+    /// underscore join the parts of a word and are not counted; nor is a
+    /// key that is a letter in one layout (`[` → `х`, `'` → `э`).
+    fn is_sign(&self) -> bool {
+        self.chars.iter().all(|c| {
+            c.is_some_and(|c| {
+                !c.is_alphanumeric() && !c.is_whitespace() && c != '-' && c != '_'
+            })
+        })
+    }
 }
 
 /// One tap of a modifier that is being watched for the gesture.
@@ -554,20 +566,34 @@ impl Engine {
     fn gesture(&mut self, verdict: &mut Verdict) {
         // The last word: the non-space keys before the trailing spaces.
         let trailing = self.line.iter().rev().take_while(|t| t.is_space()).count();
-        let word_len = self
+        let run_len = self
             .line
             .iter()
             .rev()
             .skip(trailing)
             .take_while(|t| !t.is_space())
             .count();
-        if word_len == 0 {
+        if run_len == 0 {
             // Nothing typed: the selection, or the layout alone.
             verdict.effects.push(Effect::ConvertSelection);
             return;
         }
+        // A sign before the letters (`word/ghbdtn`, `/ghbdtn`) was meant
+        // as typed and ends the word: what stands before it is left alone.
+        // Signs after the letters (`ghbdtn/`) were typed blind with the
+        // word and flip with it (`привет.`).
+        let run_start = self.line.len() - trailing - run_len;
+        let run = self.line.range(run_start..run_start + run_len);
+        let trailing_signs = run.clone().rev().take_while(|t| t.is_sign()).count();
+        let last_sign = run
+            .clone()
+            .rev()
+            .skip(trailing_signs)
+            .position(|t| t.is_sign())
+            .map(|p| run_len - trailing_signs - p);
+        let start = run_start + last_sign.unwrap_or(0);
+        let word_len = self.line.len() - trailing - start;
         let from = self.screen();
-        let start = self.line.len() - trailing - word_len;
         // The word is shown in one layout throughout (typed in one, flipped
         // as a whole), so the last key says where it stands.
         let to = 1 - self.line[start + word_len - 1].shown;
@@ -816,6 +842,66 @@ mod tests {
         let effects = t.double_shift();
         assert_eq!(replace(&effects), Some((8, "привет  ".to_owned())));
         assert_eq!(t.engine.screen(), "привет  ");
+    }
+
+    #[test]
+    fn a_sign_before_the_letters_ends_the_word() {
+        // The slash was meant: what stands before it stays Latin.
+        let mut t = Typer::new(Config::default());
+        t.type_text("word/ghbdtn");
+        let effects = t.double_shift();
+        assert_eq!(replace(&effects), Some((6, "привет".to_owned())));
+        assert_eq!(t.engine.screen(), "word/привет");
+        let effects = t.double_shift();
+        assert_eq!(replace(&effects), Some((6, "ghbdtn".to_owned())));
+        assert_eq!(t.engine.screen(), "word/ghbdtn");
+        // A sign at the start, a bracket, a chain of signs.
+        for (typed, shown) in [
+            ("/ghbdtn", "/привет"),
+            ("(ghbdtn", "(привет"),
+            ("@user:ghbdtn", "@user:привет"),
+            ("v2/ghbdtn", "v2/привет"),
+        ] {
+            let mut t = Typer::new(Config::default());
+            t.type_text(typed);
+            t.double_shift();
+            assert_eq!(t.engine.screen(), shown, "{typed}");
+        }
+    }
+
+    #[test]
+    fn signs_after_the_letters_flip_with_the_word() {
+        // `ghbdtn/` was typed blind as `привет.`.
+        let mut t = Typer::new(Config::default());
+        t.type_text("ghbdtn/");
+        let effects = t.double_shift();
+        assert_eq!(replace(&effects), Some((7, "привет.".to_owned())));
+        assert_eq!(t.engine.screen(), "привет.");
+        // Signs alone flip too, as any word.
+        let mut t = Typer::new(Config::default());
+        t.type_text("//");
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "..");
+    }
+
+    #[test]
+    fn a_hyphen_an_underscore_and_a_letter_key_join_a_word() {
+        let mut t = Typer::new(Config::default());
+        t.type_text("rnj-yb,elm");
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "кто-нибудь");
+        // `'` is э in the other layout: a word may start with it.
+        let mut t = Typer::new(Config::default());
+        t.type_text("'nj");
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "это");
+        // An identifier typed in the Cyrillic layout.
+        let mut t = Typer::new(Config::default());
+        t.layout = 1;
+        t.type_text("ьн_мфк");
+        assert_eq!(t.engine.screen(), "ьн_мфк");
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "my_var");
     }
 
     #[test]
