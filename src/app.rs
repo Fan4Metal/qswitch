@@ -479,6 +479,30 @@ impl App {
             {
                 self.set_paused(!paused);
             }
+            // The trace writes every key to a file: said in red while it is
+            // on, wherever the window is; a click goes to its check box.
+            if self.tracing() {
+                ui.add_space(8.0);
+                let text = egui::RichText::new(tr!(
+                    "Every key is written to a file!",
+                    "Все клавиши пишутся в файл!"
+                ))
+                .color(ui.visuals().error_fg_color)
+                .strong();
+                let path = Self::trace_path()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_default();
+                if ui
+                    .add(egui::Label::new(text).sense(egui::Sense::click()))
+                    .on_hover_text(tr!(
+                        format!("The trace goes to {path}; turn it off on the Status page."),
+                        format!("Трассировка пишется в {path}; выключите её на странице «Состояние».")
+                    ))
+                    .clicked()
+                {
+                    self.page = Page::Status;
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(tag) = self.updates.newer().map(str::to_owned)
                     && crate::ui::update_button(ui, &tag).clicked()
