@@ -17,9 +17,9 @@
 
 qswitch is a small keyboard layout switcher for Windows for those who write in two languages, in the spirit of Punto Switcher and Caramba Switcher. A word typed in the wrong layout (`ghbdtn` instead of `привет`, `зкштеа` instead of `printf`) is fixed with two taps of Shift: the word is replaced with the same keys read in the other layout, and the window is switched to that layout. The program lives in the notification area, shows the current layout there, and follows rules per program. Nothing typed is written to disk and nothing is sent anywhere.
 
-![qswitch's Status page: the layout and the program in front, the recent conversions](images/screenshot.png)
+![qswitch's Status page: the state, the layout and the program in front, a field to try the gesture in](images/screenshot.png)
 
-*Screenshot of version 0.1.0.*
+*Screenshot of version 0.1.1.*
 
 ## Features
 
@@ -27,7 +27,7 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 - **Selected text**: with nothing typed, the gesture converts the selection instead, in any program that exposes its text to UI Automation (editors, browsers, Office, messengers).
 - **Caps Lock as the layout switch**: optional; Shift+Caps Lock stays the real Caps Lock.
 - **The layout in the notification area**: two letters (`EN`, `RU`) in the colour of the taskbar, grey while paused.
-- **A badge near the caret**: the layout's letters appear under the caret for a moment whenever the layout changes, or stay beside it as it moves (see [The badge near the caret](#the-badge-near-the-caret)).
+- **A badge near the caret**: the layout's letters appear under the caret for a moment whenever the layout changes, or stay beside it as it moves, in a size and a colour of choice (see [The badge near the caret](#the-badge-near-the-caret)).
 - **Rules per program**: do nothing in games and remote desktops, start a program in a given layout (see [Programs](#programs)).
 - **Any pair of installed layouts**, not only English and Russian.
 - **Light, dark or system theme.**
@@ -37,13 +37,17 @@ qswitch is a small keyboard layout switcher for Windows for those who write in t
 
 ## Installation
 
-The installer and the portable archive are on the [Releases](https://github.com/Fan4Metal/qswitch/releases) page.
+The installer and the portable archive are on the [Releases](https://github.com/Fan4Metal/qswitch/releases) page. The executables are not code-signed, so Windows SmartScreen may warn about an unknown publisher on first launch.
 
-The installer, `qswitch_<version>_Setup.exe`, needs no administrator rights: the program is placed in `%LOCALAPPDATA%\Programs\qswitch`. It offers to start the program with Windows (the same setting is on the Settings page). The installed program keeps its settings in `%APPDATA%\qswitch`.
+- **Installer**, `qswitch_<version>_Setup.exe`: needs no administrator rights; the program is placed in `%LOCALAPPDATA%\Programs\qswitch` and keeps its settings in `%APPDATA%\qswitch`. It offers to start the program with Windows (the same setting is on the Settings page).
+- **Portable archive**, `qswitch_<version>_portable.zip`: the program in a `qswitch` folder, run without installation; the settings are kept next to it, so it can be carried on a removable drive.
 
-The portable archive, `qswitch_<version>_portable.zip`, holds the program in a `qswitch` folder and runs without installation. It also holds an empty `qswitch.json`. While that file is next to `qswitch.exe` and the folder is writable, the settings are kept in it, so the program can be carried on a removable drive. Without the file, the program keeps them in `%APPDATA%\qswitch`, as the installed program does. The About window shows where the settings are kept.
+<details>
+<summary>Where the portable program keeps its settings</summary>
 
-The executables are not code-signed, so Windows SmartScreen may warn about an unknown publisher on first launch.
+The archive holds an empty `qswitch.json`. While that file is next to `qswitch.exe` and the folder is writable, the settings are kept in it. Without the file, the program keeps them in `%APPDATA%\qswitch`, as the installed program does. The About window shows where the settings are kept.
+
+</details>
 
 ## The gesture
 
@@ -54,13 +58,41 @@ The program watches the keys typed since the caret last moved (a click, an arrow
 | The first | The last word is erased and typed again as the same keys read in the other layout; the window is switched to that layout. |
 | The second | The word is put back as it was typed, and the layout too. Each further repeat flips it again. |
 
-With nothing typed yet, the gesture converts the selected text, if there is one: the selection is read through UI Automation, converted character by character (each goes to the other layout of the pair) and typed over the selection, and the window is switched to the layout of the result. With no selection either, the gesture only switches the layout. Programs that do not expose their text (and terminals, where typing does not replace a selection) get the layout switch alone. Instead of two taps of Shift, the Settings page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher). The Status page has a field to try the gesture in: a word typed there in the wrong layout is converted like anywhere else.
+The Status page has a field to try the gesture in: a word typed there in the wrong layout is converted like anywhere else. Instead of two taps of Shift, the Settings page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher).
+
+<details>
+<summary>Selected text, and the gesture with nothing typed</summary>
+
+With nothing typed yet, the gesture converts the selected text, if there is one: the selection is read through UI Automation, converted character by character (each goes to the other layout of the pair) and typed over the selection, and the window is switched to the layout of the result. With no selection either, the gesture only switches the layout. Programs that do not expose their text (and terminals, where typing does not replace a selection) get the layout switch alone.
+
+</details>
+
+<details>
+<summary>How the conversion is typed, and where it does nothing</summary>
 
 The conversion is done by erasing characters before the caret with Backspace and typing the new ones as Unicode, so it works in any program that takes keyboard input: editors, browsers, messengers, terminals. Programs that handle keys themselves (games with DirectInput, remote desktops, virtual machines) are better left alone with a rule (see [Programs](#programs)); a remote desktop, VirtualBox, VMware and Hyper-V are excluded from the start. Windows of programs running as administrator do not accept input from a program that is not, so the gesture does nothing there unless qswitch itself runs as administrator.
 
+</details>
+
 ## The badge near the caret
 
-When the layout changes, by the gesture or by Alt+Shift, a small badge with the layout's letters appears under the caret of the window in front and goes after 0.7 s, so the layout is seen where the eyes are, not in the corner of the screen. The Settings page offers three modes: off, for a moment when the layout changes (the default, with the time it stays), or always, following the caret. The size of its letters is set there too (10 pt by default), and the badge may take a colour of its own for each layout of the pair (a blue and a red until chosen) instead of the grey of the taskbar, so the layout is told by the colour before the letters are read. The badge appears beside the pointer while any of these is being changed, and on the **Show** button, so the look can be judged at once. In the second mode the badge also appears for a moment when the caret is placed: a click into text, another field, another window (a check box, on by default); a click on anything that takes no text shows nothing. The badge takes no focus and lets clicks through. Its place comes from the caret the program in front reports to Windows (Notepad, Office and most classic programs); for programs that draw their own caret (Chrome, Edge, VS Code and other Electron applications, WPF and Store applications) it is asked through accessibility (UI Automation), which takes a few milliseconds. Only when neither answers does the badge appear beside the mouse pointer.
+When the layout changes, by the gesture or by Alt+Shift, a small badge with the layout's letters appears under the caret of the window in front and goes after 0.7 s, so the layout is seen where the eyes are, not in the corner of the screen. The Settings page offers three modes: off, for a moment when the layout changes (the default, with the time it stays), or always, following the caret. The badge takes no focus and lets clicks through.
+
+<details>
+<summary>Size, colours and the preview</summary>
+
+The size of the badge's letters is set on the Settings page (10 pt by default), and the badge may take a colour of its own for each layout of the pair (a blue and a red until chosen) instead of the grey of the taskbar, so the layout is told by the colour before the letters are read. The badge appears beside the pointer while any of these is being changed, and on the **Show** button, so the look can be judged at once.
+
+</details>
+
+<details>
+<summary>The caret placed, and how the caret is found</summary>
+
+In the "for a moment" mode the badge also appears when the caret is placed: a click into text, another field, another window (a check box, on by default); a click on anything that takes no text shows nothing. In the "always" mode it follows the caret the same way through clicks and changes of window, and leaves when the focus goes to something that takes no text.
+
+Its place comes from the caret the program in front reports to Windows (Notepad, Office and most classic programs); for programs that draw their own caret (Chrome, Edge, VS Code and other Electron applications, WPF and Store applications) it is asked through accessibility (UI Automation), which takes a few milliseconds. Only when neither answers does the badge appear beside the mouse pointer.
+
+</details>
 
 ## Programs
 
@@ -75,13 +107,21 @@ The list under the rules offers the programs that have a window on the screen no
 
 ## Pause and the notification area
 
-A click on the icon only switches the layout of the window that was in front, and the focus stays where it is; qswitch's own window opens from the icon's menu, which has **Show**, **Pause** (every key goes through untouched, the icon turns grey) and **Exit**. The window's close button and the Esc key hide it to the notification area (a setting on the Settings page); the program is ended from the icon's menu. A second start of `qswitch.exe` only brings the window of the running copy forward; `qswitch.exe --pause`, `--resume` and `--quit` tell the running copy what to do (for scripts and game launchers), `--hidden` starts it without the window (the autostart entry).
+A click on the icon only switches the layout of the window that was in front, and the focus stays where it is; qswitch's own window opens from the icon's menu, which has **Show**, **Pause** (every key goes through untouched, the icon turns grey) and **Exit**. The window's close button and the Esc key hide it to the notification area (a setting on the Settings page); the program is ended from the icon's menu.
+
+<details>
+<summary>The command line</summary>
+
+A second start of `qswitch.exe` only brings the window of the running copy forward. `qswitch.exe --pause`, `--resume` and `--quit` tell the running copy what to do (for scripts and game launchers); `--hidden` starts it without the window (the autostart entry); `--version` and `--help` print to the console.
+
+</details>
 
 ## Keyboard shortcuts
 
 | Key | Action |
 |---|---|
 | `Shift` `Shift` | Convert the last word, or put it back; with nothing typed, the selected text (the default gesture, see above) |
+| `Esc` | Hide the window to the notification area |
 | `F1` | About |
 
 ## Update check and privacy
@@ -99,7 +139,25 @@ uv run build.py          # target\release\qswitch.exe
 cargo test
 ```
 
+<details>
+<summary>How the build works</summary>
+
 `build.py` first closes a `qswitch.exe` running from the project's `target` folder, because it would lock the file, then runs `cargo build --release`. When the program is not running, plain `cargo build --release` works as well. The executable links the C runtime statically (`.cargo/config.toml`), so it needs nothing beyond Windows itself.
+
+</details>
+
+<details>
+<summary>Setting up the environment</summary>
+
+The tools can be installed with winget:
+
+```
+winget install Rustlang.Rustup Microsoft.VisualStudio.2022.BuildTools Python.Python.3.12 astral-sh.uv JRSoftware.InnoSetup
+```
+
+The C++ workload of the Build Tools ("Desktop development with C++") is selected in the Visual Studio Installer.
+
+</details>
 
 ## Installer and release
 
@@ -113,6 +171,9 @@ python tools/make_release.py --install    # then a silent installation over the 
 
 The script writes the files to `dist` and takes the version from `Cargo.toml`. The installer script is `tools/setup.iss`; `qswitch.exe --export-icon <file.ico>` writes the installer icon.
 
+<details>
+<summary>Releases on GitHub</summary>
+
 Releases on GitHub are built by the **Release** workflow (`.github/workflows/release.yml`). After the version in `Cargo.toml` is updated and committed, pushing a matching tag publishes a release with the installer and the portable archive:
 
 ```
@@ -121,6 +182,8 @@ git push origin v0.1.0
 ```
 
 The workflow stops if the tag does not match the version in `Cargo.toml`. Running the workflow manually (Actions → Release → Run workflow) builds the files and attaches them to the run, without making a release.
+
+</details>
 
 ## Built with
 
