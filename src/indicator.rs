@@ -278,8 +278,16 @@ impl Indicator {
         };
         self.asked = None;
         if asked.placed {
-            if let Some(caret) = caret {
-                self.flash_at(caret);
+            match caret {
+                Some(caret) => self.placed_at(caret),
+                // The focus went to something that takes no text: in the
+                // `Always` mode the badge leaves with the caret, instead of
+                // staying where the caret was.
+                None if self.config.mode == IndicatorMode::Always => {
+                    self.caret = None;
+                    self.hide();
+                }
+                None => {}
             }
         } else {
             self.show_at(caret);
@@ -288,12 +296,17 @@ impl Indicator {
 
     /// The caret may have been placed: a left click (`click`), the focus
     /// moved, another window in front. It is looked for a moment later
-    /// ([`PLACED_TIMER`]), and the badge flashes there.
+    /// ([`PLACED_TIMER`]), and the badge flashes there (`OnSwitch` with
+    /// `on_caret`), or settles there (`Always`: a program that reports no
+    /// caret event until a key is typed, such as a browser's field after
+    /// the window came back, would leave the badge hidden otherwise).
     pub fn caret_placed(&mut self, click: bool) {
-        if self.config.mode != IndicatorMode::OnSwitch
-            || !self.config.on_caret
-            || self.letters.is_empty()
-        {
+        let wanted = match self.config.mode {
+            IndicatorMode::Off => false,
+            IndicatorMode::OnSwitch => self.config.on_caret,
+            IndicatorMode::Always => true,
+        };
+        if !wanted || self.letters.is_empty() {
             return;
         }
         let placed = match self.placed {
@@ -323,9 +336,19 @@ impl Indicator {
             Some(caret) if placed.click && placed.before.is_some_and(|b| same(b, caret)) => {}
             Some(caret) => {
                 self.caret = Some(caret);
-                self.flash_at(caret);
+                self.placed_at(caret);
             }
             None => self.ask(true),
+        }
+    }
+
+    /// The badge at a caret just placed: for a moment, or from now on in
+    /// the `Always` mode.
+    fn placed_at(&mut self, caret: RECT) {
+        if self.config.mode == IndicatorMode::Always {
+            self.show_at(Some(caret));
+        } else {
+            self.flash_at(caret);
         }
     }
 
