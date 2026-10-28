@@ -48,11 +48,20 @@ pub fn installed() -> Vec<Layout> {
         .collect()
 }
 
-/// The two-letter code and the name of a layout's language.
+/// The two-letter code and the name of a layout's language, the name in
+/// the interface's language: English for the English interface, else as
+/// Windows shows it (`i18n::lang`, so `installed` is called again when
+/// the language is changed).
 #[cfg(windows)]
 fn describe(hkl: Hkl) -> (String, String) {
     use windows_sys::Win32::Globalization::{GetLocaleInfoEx, LCIDToLocaleName};
     const LOCALE_SLOCALIZEDDISPLAYNAME: u32 = 0x0000_0002;
+    const LOCALE_SENGLISHDISPLAYNAME: u32 = 0x0000_0072;
+    let name_kind = if crate::i18n::lang() == crate::i18n::Lang::En {
+        LOCALE_SENGLISHDISPLAYNAME
+    } else {
+        LOCALE_SLOCALIZEDDISPLAYNAME
+    };
     let lang = (hkl as u32) & 0xFFFF;
     let mut locale = [0u16; 85];
     let n = unsafe { LCIDToLocaleName(lang, locale.as_mut_ptr(), locale.len() as i32, 0) };
@@ -65,7 +74,7 @@ fn describe(hkl: Hkl) -> (String, String) {
     let n = unsafe {
         GetLocaleInfoEx(
             locale.as_ptr(),
-            LOCALE_SLOCALIZEDDISPLAYNAME,
+            name_kind,
             name.as_mut_ptr(),
             name.len() as i32,
         )

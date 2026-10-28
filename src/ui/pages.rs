@@ -42,13 +42,21 @@ pub fn status(app: &mut App, ui: &mut Ui) {
         ),
         _ => {
             let how = match app.settings.trigger {
-                Trigger::Off => tr!("the gesture is off", "жест выключен").to_owned(),
-                t => tr!(
-                    format!("{} converts the last word", trigger_label(t)),
-                    format!("{} переводит последнее слово", trigger_label(t))
+                Trigger::Off => tr!("the gesture is off", "жест выключен"),
+                Trigger::DoubleShift => tr!(
+                    "two taps of Shift convert the last word",
+                    "два нажатия Shift переводят последнее слово"
+                ),
+                Trigger::DoubleCtrl => tr!(
+                    "two taps of Ctrl convert the last word",
+                    "два нажатия Ctrl переводят последнее слово"
+                ),
+                Trigger::Pause => tr!(
+                    "Pause/Break converts the last word",
+                    "Pause/Break переводит последнее слово"
                 ),
             };
-            light(ui, WORKING, tr!("Working", "Работает"), &how)
+            light(ui, WORKING, tr!("Working", "Работает"), how)
         }
     }
     if app.layouts.len() < 2 {

@@ -623,8 +623,12 @@ impl eframe::App for App {
                 });
         });
         self.about.show(&ctx, &mut self.updates);
-        // About changes the language and the update check in place.
-        self.settings.language = self.about.lang;
+        // About changes the language and the update check in place; the
+        // layouts' names follow the language.
+        if self.settings.language != self.about.lang {
+            self.settings.language = self.about.lang;
+            self.layouts = layout::installed();
+        }
         self.settings.check_updates = self.updates.enabled;
         self.settings.last_update_check = self.updates.last_check;
         let _ = ThemePreference::System;
