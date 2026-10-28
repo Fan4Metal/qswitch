@@ -479,25 +479,40 @@ impl App {
             {
                 self.set_paused(!paused);
             }
-            // The trace writes every key to a file: said in red while it is
-            // on, wherever the window is; a click goes to its check box.
+            // What keeps or writes what was typed is said in red while it
+            // is on, whatever page is shown; a click goes to its check box
+            // on the Status page.
+            let mut warnings = Vec::new();
             if self.tracing() {
-                ui.add_space(8.0);
-                let text = egui::RichText::new(tr!(
-                    "Every key is written to a file!",
-                    "Все клавиши пишутся в файл!"
-                ))
-                .color(ui.visuals().error_fg_color)
-                .strong();
                 let path = Self::trace_path()
                     .map(|p| p.display().to_string())
                     .unwrap_or_default();
-                if ui
-                    .add(egui::Label::new(text).sense(egui::Sense::click()))
-                    .on_hover_text(tr!(
+                warnings.push((
+                    tr!("Every key is written to a file!", "Все клавиши пишутся в файл!").to_owned(),
+                    tr!(
                         format!("The trace goes to {path}; turn it off on the Status page."),
                         format!("Трассировка пишется в {path}; выключите её на странице «Состояние».")
-                    ))
+                    ),
+                ));
+            }
+            if self.settings.keep_conversions {
+                warnings.push((
+                    tr!("Conversions are kept!", "Преобразования хранятся!").to_owned(),
+                    tr!(
+                        "The list on the Status page keeps the converted words in memory, passwords among them; turn it off there.",
+                        "Список на странице «Состояние» держит в памяти преобразованные слова, в том числе пароли; выключите его там."
+                    )
+                    .to_owned(),
+                ));
+            }
+            for (text, tip) in warnings {
+                ui.add_space(8.0);
+                let text = egui::RichText::new(text)
+                    .color(ui.visuals().error_fg_color)
+                    .strong();
+                if ui
+                    .add(egui::Label::new(text).sense(egui::Sense::click()))
+                    .on_hover_text(tip)
                     .clicked()
                 {
                     self.page = Page::Status;

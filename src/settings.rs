@@ -141,8 +141,9 @@ pub struct Settings {
     /// The window's close button hides it to the tray; off, it ends the
     /// program.
     pub close_to_tray: bool,
-    /// The Status page lists the last conversions (in memory only); off,
-    /// nothing of them is kept.
+    /// The Status page lists the last conversions (in memory only, and
+    /// said in red in the toolbar: passwords are converted too); off
+    /// until turned on, and then nothing of them is kept.
     pub keep_conversions: bool,
     /// The gesture that converts what was typed.
     pub trigger: Trigger,
@@ -183,7 +184,7 @@ impl Default for Settings {
             last_update_check: 0,
             window: None,
             close_to_tray: true,
-            keep_conversions: true,
+            keep_conversions: false,
             trigger: engine.trigger,
             caps_lock_switch: engine.caps_lock_switch,
             indicator: IndicatorMode::OnSwitch,
@@ -404,7 +405,7 @@ mod tests {
         assert_eq!(settings.theme, ThemeSetting::Dark);
         assert_eq!(settings.trigger, Trigger::Pause);
         assert!(settings.close_to_tray);
-        assert!(settings.keep_conversions);
+        assert!(!settings.keep_conversions);
         assert!(settings.indicator_on_caret);
         assert_eq!(settings.indicator_size, 10);
         assert_eq!(settings.rule_for(r"C:\Games\game.exe"), Some(RuleMode::Off));

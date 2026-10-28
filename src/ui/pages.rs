@@ -113,8 +113,8 @@ pub fn status(app: &mut App, ui: &mut Ui) {
         if ui
             .checkbox(&mut app.settings.keep_conversions, tr!("keep", "хранить"))
             .on_hover_text(tr!(
-                "Off, nothing of them is kept, not even in memory.",
-                "Выключено — преобразования не хранятся, даже в памяти."
+                "The converted words, passwords among them, kept in memory while the program runs; off, nothing of them is kept.",
+                "Преобразованные слова, в том числе пароли, в памяти, пока программа работает; выключено — не хранятся вовсе."
             ))
             .changed()
             && !app.settings.keep_conversions
@@ -125,13 +125,13 @@ pub fn status(app: &mut App, ui: &mut Ui) {
     });
     if app.settings.keep_conversions {
         ui.weak(tr!(
-            "Kept in memory while the program runs; nothing typed is written to disk.",
-            "Хранятся в памяти, пока программа работает; набранное на диск не пишется."
+            "Kept in memory while the program runs, passwords among them; nothing is written to disk.",
+            "Хранятся в памяти, пока программа работает, в том числе пароли; на диск ничего не пишется."
         ));
     } else {
         ui.weak(tr!(
-            "Off: conversions are not kept, not even in memory.",
-            "Выключено: преобразования не хранятся, даже в памяти."
+            "Off: conversions are not kept, not even in memory. On, for a check, they are listed here.",
+            "Выключено: преобразования не хранятся, даже в памяти. Включённые, для проверки, перечисляются здесь."
         ));
     }
     ui.add_space(4.0);
