@@ -152,6 +152,9 @@ pub struct Settings {
     pub auto_switch: bool,
     /// How sure the automatic switch must be.
     pub auto_confidence: crate::lang::Confidence,
+    /// Signs typed at either end of a word are not flipped with it
+    /// (`engine::Config::signs_as_typed`).
+    pub signs_as_typed: bool,
     /// Caps Lock switches the layout (Shift+Caps Lock is the real one).
     pub caps_lock_switch: bool,
     /// The badge near the caret.
@@ -193,6 +196,7 @@ impl Default for Settings {
             trigger: engine.trigger,
             auto_switch: false,
             auto_confidence: crate::lang::Confidence::Normal,
+            signs_as_typed: engine.signs_as_typed,
             caps_lock_switch: engine.caps_lock_switch,
             indicator: IndicatorMode::OnSwitch,
             indicator_ms: 700,
@@ -347,6 +351,7 @@ impl Settings {
             tap_ms: self.tap_ms,
             gap_ms: self.gap_ms,
             auto,
+            signs_as_typed: self.signs_as_typed,
         }
     }
 

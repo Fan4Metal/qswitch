@@ -87,6 +87,11 @@ pub struct Config {
     /// The automatic switch; `None`: off, or a pair with a language the
     /// program has no table for.
     pub auto: Option<Auto>,
+    /// Signs typed at either end of a word (`"ghbdtn"`: the quotes are
+    /// `Э` in the other layout) were meant as typed and are not flipped;
+    /// the word's letters are. A word that starts or ends with a letter on
+    /// such a key (`,eltn` for `будет`) then keeps the sign.
+    pub signs_as_typed: bool,
 }
 
 impl Default for Config {
@@ -97,6 +102,7 @@ impl Default for Config {
             tap_ms: 250,
             gap_ms: 350,
             auto: None,
+            signs_as_typed: false,
         }
     }
 }
@@ -197,6 +203,12 @@ impl Typed {
                 !c.is_alphanumeric() && !c.is_whitespace() && c != '-' && c != '_'
             })
         })
+    }
+
+    /// A sign in the layout it was typed in, whatever it is in the other
+    /// (`"` typed in the Latin layout, `Э` in the Cyrillic one).
+    fn typed_as_sign(&self) -> bool {
+        self.chars[self.typed as usize].is_some_and(|c| !c.is_alphanumeric() && !c.is_whitespace())
     }
 }
 
@@ -520,17 +532,50 @@ impl Engine {
             .skip(1)
             .take_while(|t| !t.is_space())
             .count();
-        if word_len < MIN_AUTO_LEN {
+        let start = end - word_len;
+        // With the signs at the ends kept, the letters are judged first
+        // (`"ghbdtn` → `"привет`), then the whole word (`,eltn` → `будет`).
+        let (first, last) = self.letters(start, end);
+        // Letters put back once are left alone whatever signs stand by.
+        let letters: String = self
+            .line
+            .range(first..last)
+            .map(|t| t.char_in(layout))
+            .collect();
+        if self.exceptions.contains(&letters.to_lowercase()) {
             return;
         }
-        let start = end - word_len;
+        let range = if (first, last) != (start, end) && self.wrong_layout(first, last, layout, auto)
+        {
+            first..last
+        } else if self.wrong_layout(start, end, layout, auto) {
+            start..end
+        } else {
+            return;
+        };
+        let from = self.screen();
+        for t in self.line.range_mut(range) {
+            t.shown = other;
+            t.auto = true;
+        }
+        self.emit_difference(&from, verdict);
+        verdict.effects.push(Effect::SwitchLayout(other));
+    }
+
+    /// The keys `start..end`, typed in `layout`, read as a word typed in
+    /// the wrong layout.
+    fn wrong_layout(&self, start: usize, end: usize, layout: u8, auto: Auto) -> bool {
+        if end - start < MIN_AUTO_LEN {
+            return false;
+        }
+        let other = 1 - layout;
         let word = self.line.range(start..end);
         // Typed in this layout as it stands, nothing flipped, every key
         // with a character in the other layout too.
         if word.clone().any(|t| {
             t.typed != layout || t.shown != layout || t.auto || t.chars[other as usize].is_none()
         }) {
-            return;
+            return false;
         }
         let current: String = word.clone().map(|t| t.char_in(layout)).collect();
         let other_text: String = word.map(|t| t.char_in(other)).collect();
@@ -538,27 +583,34 @@ impl Engine {
             .chars()
             .any(|c| c.is_ascii_digit() || NOT_A_WORD.contains(c))
         {
-            return;
+            return false;
         }
         if self.exceptions.contains(&current.to_lowercase()) {
-            return;
+            return false;
         }
-        if !crate::lang::wrong_layout(
+        crate::lang::wrong_layout(
             &current,
             &other_text,
             auto.langs[layout as usize],
             auto.langs[other as usize],
             auto.confidence,
-        ) {
-            return;
+        )
+    }
+
+    /// The keys of the word `start..end` that flip: all of them, or with
+    /// `signs_as_typed` those between the signs typed at either end (an
+    /// empty range at `end` when there are signs alone).
+    fn letters(&self, start: usize, end: usize) -> (usize, usize) {
+        if !self.config.signs_as_typed {
+            return (start, end);
         }
-        let from = self.screen();
-        for t in self.line.range_mut(start..end) {
-            t.shown = other;
-            t.auto = true;
+        let word = self.line.range(start..end);
+        let lead = word.clone().take_while(|t| t.typed_as_sign()).count();
+        if start + lead == end {
+            return (end, end);
         }
-        self.emit_difference(&from, verdict);
-        verdict.effects.push(Effect::SwitchLayout(other));
+        let tail = word.rev().take_while(|t| t.typed_as_sign()).count();
+        (start + lead, end - tail)
     }
 
     /// The gesture: flip the last word to the other layout; a word flipped
@@ -592,16 +644,33 @@ impl Engine {
             .position(|t| t.is_sign())
             .map(|p| run_len - trailing_signs - p);
         let start = run_start + last_sign.unwrap_or(0);
-        let word_len = self.line.len() - trailing - start;
+        let end = self.line.len() - trailing;
+        // With `signs_as_typed`, the signs at either end stay as typed.
+        let (first, last) = self.letters(start, end);
         let from = self.screen();
-        // The word is shown in one layout throughout (typed in one, flipped
-        // as a whole), so the last key says where it stands.
-        let to = 1 - self.line[start + word_len - 1].shown;
+        if first == last {
+            // Signs alone: nothing to flip, the layout alone.
+            for t in self.line.range_mut(start..end) {
+                t.shown = t.typed;
+                t.auto = false;
+            }
+            self.emit_difference(&from, verdict);
+            verdict.effects.push(Effect::ToggleLayout);
+            return;
+        }
+        // The letters are shown in one layout throughout (typed in one,
+        // flipped as a whole), so the last of them says where they stand.
+        let to = 1 - self.line[last - 1].shown;
         // An automatic conversion put back by hand: the word was right as
         // typed, and is not to be converted again.
-        let word = self.line.range(start..start + word_len);
-        if word.clone().all(|t| t.auto && t.typed == to) {
-            let as_typed: String = word.map(|t| t.char_in(to)).collect::<String>().to_lowercase();
+        if self.line.range(first..last).all(|t| t.auto && t.typed == to) {
+            let as_typed: String = self
+                .line
+                .range(start..end)
+                .filter(|t| t.auto)
+                .map(|t| t.char_in(to))
+                .collect::<String>()
+                .to_lowercase();
             if !self.exceptions.contains(&as_typed) {
                 if self.exceptions.len() >= MAX_EXCEPTIONS {
                     self.exceptions.remove(0);
@@ -609,8 +678,12 @@ impl Engine {
                 self.exceptions.push(as_typed);
             }
         }
-        for t in self.line.iter_mut().skip(start) {
-            t.shown = to;
+        for (i, t) in self.line.iter_mut().enumerate().skip(start) {
+            t.shown = if (first..last).contains(&i) || i >= end {
+                to
+            } else {
+                t.typed
+            };
             t.auto = false;
         }
         self.emit_difference(&from, verdict);
@@ -882,6 +955,45 @@ mod tests {
         t.type_text("//");
         t.double_shift();
         assert_eq!(t.engine.screen(), "..");
+    }
+
+    fn signs_as_typed() -> Config {
+        Config {
+            signs_as_typed: true,
+            ..Config::default()
+        }
+    }
+
+    #[test]
+    fn signs_at_the_ends_stay_as_typed_when_asked() {
+        // `'` and `[` are э and х in the other layout, but were typed as
+        // signs; a letter key inside the word still flips.
+        for (typed, shown) in [
+            ("'ghbdtn'", "'привет'"),
+            ("([ghbdtn]", "([привет]"),
+            ("ghbdtn.", "привет."),
+            ("ghbdtn/", "привет/"),
+            ("vj;tn", "может"),
+            ("word/'ghbdtn", "word/'привет"),
+        ] {
+            let mut t = Typer::new(signs_as_typed());
+            t.type_text(typed);
+            t.double_shift();
+            assert_eq!(t.engine.screen(), shown, "{typed}");
+            t.double_shift();
+            assert_eq!(t.engine.screen(), typed, "{typed}");
+        }
+        // Off, they flip with the word.
+        let mut t = Typer::new(Config::default());
+        t.type_text("'ghbdtn'");
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "эприветэ");
+        // Signs alone: the layout alone.
+        let mut t = Typer::new(signs_as_typed());
+        t.type_text("''");
+        let effects = t.double_shift();
+        assert_eq!(effects, vec![Effect::ToggleLayout]);
+        assert_eq!(t.engine.screen(), "''");
     }
 
     #[test]
@@ -1206,6 +1318,25 @@ mod tests {
         assert!(replace(&t.type_text("Ghbdtn ")).is_none());
         // Another word is still converted.
         assert!(replace(&t.type_text("rfr ")).is_some());
+    }
+
+    #[test]
+    fn the_automatic_switch_keeps_the_signs_at_the_ends_when_asked() {
+        let mut t = Typer::new(Config {
+            signs_as_typed: true,
+            ..auto_config()
+        });
+        let effects = t.type_text("'ghbdtn' ");
+        assert_eq!(replace(&effects), Some((8, "привет' ".to_owned())));
+        assert_eq!(t.engine.screen(), "'привет' ");
+        // Put back by the gesture, and remembered.
+        t.double_shift();
+        assert_eq!(t.engine.screen(), "'ghbdtn' ");
+        assert!(replace(&t.type_text("'ghbdtn' ")).is_none());
+        // A word whose first letter is on a sign's key is converted whole.
+        t.engine.reset();
+        t.type_text(",eltn ");
+        assert_eq!(t.engine.screen(), "будет ");
     }
 
     #[test]

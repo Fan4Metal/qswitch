@@ -246,6 +246,22 @@ pub fn settings(app: &mut App, ui: &mut Ui) {
         "Жест переводит последнее слово в другую раскладку и переключает её. \
          Повторённый, возвращает слово как было, и раскладку тоже."
     ));
+    ui.add_space(6.0);
+    ui.checkbox(
+        &mut app.settings.signs_as_typed,
+        tr!(
+            "Leave the signs before and after a word as typed",
+            "Не переключать знаки перед словом и после него"
+        ),
+    )
+    .on_hover_text(tr!(
+        "\"ghbdtn\" becomes \"привет\", not ЭприветЭ. A word that starts or ends with \
+         б, ю, ж, э, х, ъ or ё typed in the Latin layout keeps the sign then: \
+         ,eltn becomes ,удет. Inside a word every key is converted.",
+        "\"ghbdtn\" станет \"привет\", а не ЭприветЭ. Зато у слова, которое начинается \
+         или кончается на б, ю, ж, э, х, ъ или ё и набрано в латинской раскладке, \
+         знак останется: ,eltn станет ,удет. Внутри слова переводятся все клавиши."
+    ));
     ui.add_space(12.0);
     ui.strong(tr!("Switching", "Переключение"));
     ui.add_space(4.0);

@@ -59,6 +59,8 @@ The program watches the keys typed since the caret last moved (a click, an arrow
 
 The word is what was typed since the last space. A sign that is a sign in both layouts (a slash, a bracket, a colon, an at sign) placed before the letters ends the word, since it was meant as typed: `word/ghbdtn` becomes `word/привет`, and the part before the slash stays. Signs after the letters were typed blind with the word and are converted with it: `ghbdtn/` becomes `привет.`. A hyphen and an underscore join the parts of a word (`rnj-yb,elm` becomes `кто-нибудь`), and so does a key that is a letter in one of the layouts (`'nj` becomes `это`).
 
+When signs are set by sight and the word after them is typed in the wrong layout, the setting "Leave the signs before and after a word as typed" keeps the signs at either end of a word as they were typed, even those on keys that give a letter in the other layout: `"ghbdtn"` becomes `"привет"` rather than `ЭприветЭ`, and `ghbdtn.` becomes `привет.`. Keys inside a word are converted as before (`vj;tn` becomes `может`). The price is a word that starts or ends with б, ю, ж, э, х, ъ or ё typed in the Latin layout: its sign stays (`,eltn` becomes `,удет`). Signs alone are not converted; the gesture then switches the layout only. The automatic switch with this setting judges the letters without the signs first (`"ghbdtn" ` becomes `"привет" `), then the whole word (`,eltn ` becomes `будет `).
+
 The Status page has a field to try the gesture in: a word typed there in the wrong layout is converted like anywhere else. Instead of two taps of Shift, the Settings page offers two taps of Ctrl or the Pause/Break key (as in Punto Switcher).
 
 <details>
